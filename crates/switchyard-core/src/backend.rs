@@ -3,7 +3,7 @@
 
 //! LLM target configuration shared by routing and factory code.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,6 +24,22 @@ pub enum BackendFormat {
     Responses,
     /// Anthropic Messages wire format.
     Anthropic,
+}
+
+/// Input content modalities that an LLM target can accept.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputModality {
+    /// Text content, including text-bearing conversation history.
+    Text,
+    /// Image content supplied by URL, file reference, or inline data.
+    Image,
+    /// Audio content supplied by URL, file reference, or inline data.
+    Audio,
+    /// Video content supplied by URL, file reference, or inline data.
+    Video,
+    /// File or document content that is not represented as another modality.
+    File,
 }
 
 /// Optional endpoint overrides for an LLM target.
@@ -62,6 +78,13 @@ pub struct LlmTarget {
     pub model: ModelId,
     /// Native wire format expected by the upstream target.
     pub format: BackendFormat,
+    /// Input modalities explicitly accepted by the upstream model.
+    ///
+    /// Native backends remove recognized content blocks not present in this
+    /// set from the target-local outbound request. None preserves the existing
+    /// pass-through behavior when target capabilities are unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<BTreeSet<InputModality>>,
     /// Connection settings for the upstream target.
     #[serde(default)]
     pub endpoint: EndpointConfig,
@@ -118,10 +141,20 @@ impl LlmTarget {
             id,
             model,
             format: BackendFormat::Auto,
+            input_modalities: None,
             endpoint: EndpointConfig::default(),
             extra_body: None,
             extra_headers: BTreeMap::new(),
         }
+    }
+
+    /// Returns the declared support state for one input modality.
+    ///
+    /// None means that the target did not declare an authoritative allowlist.
+    pub fn supports_input_modality(&self, modality: InputModality) -> Option<bool> {
+        self.input_modalities
+            .as_ref()
+            .map(|modalities| modalities.contains(&modality))
     }
 }
 

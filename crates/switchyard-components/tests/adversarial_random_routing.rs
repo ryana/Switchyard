@@ -6,8 +6,8 @@
 use serde_json::json;
 use switchyard_components::{RandomRoutingEngine, RandomRoutingProcessorConfig, RandomRoutingTier};
 use switchyard_core::{
-    BackendFormat, ChatRequest, EndpointConfig, LlmTarget, LlmTargetId, ModelId, Result,
-    SwitchyardError,
+    BackendFormat, ChatRequest, EndpointConfig, InputModality, LlmTarget, LlmTargetId, ModelId,
+    Result, SwitchyardError,
 };
 
 // Builds a deterministic strong/weak config for routing tests.
@@ -161,12 +161,14 @@ fn llm_target_format_wire_values_match_python_config_contract() -> Result<()> {
         ModelId::from_static("model"),
     );
     assert_eq!(minimal.format, BackendFormat::Auto);
+    assert_eq!(minimal.input_modalities, None);
     assert_eq!(minimal.endpoint, EndpointConfig::default());
 
     let explicit: LlmTarget = serde_json::from_value(json!({
         "id": "explicit",
         "model": "model",
         "format": "openai",
+        "input_modalities": ["text", "image"],
         "endpoint": {
             "base_url": "https://example.test/v1",
             "api_key": "secret",
@@ -175,6 +177,14 @@ fn llm_target_format_wire_values_match_python_config_contract() -> Result<()> {
     }))
     .map_err(|error| SwitchyardError::Other(error.to_string()))?;
     assert_eq!(explicit.format, BackendFormat::OpenAi);
+    assert_eq!(
+        explicit.input_modalities,
+        Some(
+            [InputModality::Text, InputModality::Image]
+                .into_iter()
+                .collect()
+        )
+    );
     assert_eq!(
         explicit.endpoint.base_url.as_deref(),
         Some("https://example.test/v1")

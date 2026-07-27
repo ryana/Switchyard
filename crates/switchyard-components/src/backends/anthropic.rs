@@ -22,8 +22,9 @@ use switchyard_translation::{
 };
 
 use super::common::{
-    build_reqwest_client, decode_sse_frame, drain_next_sse_frame, has_non_whitespace_bytes,
-    parse_json_sse_frame, request_wire_format, set_json_model, shared_translation_engine,
+    build_reqwest_client, decode_sse_frame, drain_next_sse_frame,
+    filter_unsupported_input_modalities, has_non_whitespace_bytes, parse_json_sse_frame,
+    request_wire_format, set_json_model, shared_translation_engine, translation_policy_for_target,
     ParsedSseFrame,
 };
 use super::BackendSelection;
@@ -71,11 +72,12 @@ impl AnthropicNativeBackend {
 
     fn with_transport(target: LlmTarget, transport: Arc<dyn AnthropicTransport>) -> Result<Self> {
         validate_target_format(&target)?;
+        let translation_policy = translation_policy_for_target(&target);
         Ok(Self {
             target,
             transport,
             translation: shared_translation_engine(),
-            translation_policy: TranslationPolicy::default(),
+            translation_policy,
         })
     }
 
@@ -98,6 +100,11 @@ impl AnthropicNativeBackend {
                     .body
             }
         };
+        filter_unsupported_input_modalities(
+            &mut body,
+            ChatRequestType::Anthropic,
+            self.target.input_modalities.as_ref(),
+        );
         set_json_model(&mut body, self.target.model.as_str());
         strip_anthropic_incompatible_fields(&mut body);
         normalize_anthropic_body(&mut body);
@@ -549,7 +556,7 @@ mod tests {
     use std::sync::Mutex;
 
     use serde_json::json;
-    use switchyard_core::{EndpointConfig, LlmTargetId, ModelId};
+    use switchyard_core::{EndpointConfig, InputModality, LlmTargetId, ModelId};
 
     use super::*;
 
@@ -593,6 +600,7 @@ mod tests {
             id: LlmTargetId::from_static("primary"),
             model: ModelId::from_static("target-claude"),
             format: BackendFormat::Anthropic,
+            input_modalities: None,
             endpoint: EndpointConfig {
                 base_url: Some("https://example.test/v1".to_string()),
                 api_key: Some("secret".to_string()),
@@ -601,6 +609,74 @@ mod tests {
             extra_body: None,
             extra_headers: BTreeMap::new(),
         }
+    }
+
+    fn image_requests() -> Vec<ChatRequest> {
+        vec![
+            ChatRequest::openai_chat(json!({
+                "model": "client-model",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "keep"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.test/image-marker.png"}
+                        }
+                    ]
+                }]
+            })),
+            ChatRequest::openai_responses(json!({
+                "model": "client-model",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "keep"},
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.test/image-marker.png"
+                        }
+                    ]
+                }]
+            })),
+            ChatRequest::anthropic(json!({
+                "model": "client-model",
+                "max_tokens": 128,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "keep"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "image-marker"
+                            }
+                        }
+                    ]
+                }]
+            })),
+        ]
+    }
+
+    #[test]
+    fn text_only_anthropic_target_strips_images_from_every_inbound_format() -> Result<()> {
+        for request in image_requests() {
+            let original = request.body().clone();
+            let mut target = anthropic_target();
+            target.input_modalities = Some([InputModality::Text].into_iter().collect());
+            let transport = Arc::new(FakeAnthropicTransport::with_error("ignored"));
+            let backend = AnthropicNativeBackend::with_transport(target, transport)?;
+
+            let body = backend.outbound_body(&request)?;
+
+            assert!(body.to_string().contains("keep"));
+            assert!(!body.to_string().contains("image-marker"));
+            assert_eq!(request.body(), &original);
+        }
+        Ok(())
     }
 
     #[tokio::test]

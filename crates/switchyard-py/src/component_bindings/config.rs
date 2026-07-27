@@ -12,7 +12,9 @@ use switchyard_components::{
     IntakeFormat, IntakeQueueFullPolicy, IntakeSinkConfig, IntakeTarget,
     RandomRoutingProcessorConfig,
 };
-use switchyard_core::{BackendFormat, EndpointConfig, LlmTarget, LlmTargetId, ModelId};
+use switchyard_core::{
+    BackendFormat, EndpointConfig, InputModality, LlmTarget, LlmTargetId, ModelId,
+};
 
 use crate::errors::py_core_error;
 use crate::py_serde::{value_from_python, value_to_python};
@@ -196,6 +198,7 @@ impl PyLlmTarget {
         timeout=None,
         extra_body=None,
         extra_headers=None,
+        input_modalities=None,
     ))]
     fn py_new(
         id: Option<String>,
@@ -209,6 +212,7 @@ impl PyLlmTarget {
         timeout: Option<f64>,
         extra_body: Option<&Bound<'_, PyAny>>,
         extra_headers: Option<&Bound<'_, PyAny>>,
+        input_modalities: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let mut endpoint = endpoint_config_from_python(endpoint)?;
         if base_url.is_some() {
@@ -272,6 +276,7 @@ impl PyLlmTarget {
                 out
             }
         };
+        let input_modalities = input_modalities_from_python(input_modalities)?;
 
         Ok(Self {
             inner: LlmTarget {
@@ -281,6 +286,7 @@ impl PyLlmTarget {
                 model: ModelId::new(model)
                     .map_err(|error| PyValueError::new_err(format!("invalid model id: {error}")))?,
                 format: backend_format_from_python(format.or(backend_format))?,
+                input_modalities,
                 endpoint,
                 extra_body,
                 extra_headers,
@@ -306,6 +312,14 @@ impl PyLlmTarget {
     #[getter]
     fn backend_format(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         backend_format_object(py, self.inner.format)
+    }
+
+    #[getter]
+    fn input_modalities(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match &self.inner.input_modalities {
+            None => Ok(py.None()),
+            Some(modalities) => to_python(py, modalities),
+        }
     }
 
     #[getter]
@@ -387,11 +401,22 @@ impl PyLlmTarget {
     }
 
     fn __repr__(&self) -> String {
+        let input_modalities = match &self.inner.input_modalities {
+            Some(modalities) => format!(
+                "{:?}",
+                modalities
+                    .iter()
+                    .map(|modality| input_modality_name(*modality))
+                    .collect::<Vec<_>>()
+            ),
+            None => "None".to_string(),
+        };
         format!(
-            "LlmTarget(id={:?}, model={:?}, format='{}')",
+            "LlmTarget(id={:?}, model={:?}, format='{}', input_modalities={})",
             self.inner.id.as_str(),
             self.inner.model.as_str(),
             backend_format_name(self.inner.format),
+            input_modalities,
         )
     }
 }
@@ -732,6 +757,29 @@ fn backend_format_object(py: Python<'_>, format: BackendFormat) -> PyResult<Py<P
     py.get_type::<PyBackendFormat>()
         .getattr(backend_format_variant_name(format))
         .map(Bound::unbind)
+}
+
+fn input_modalities_from_python(
+    value: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<std::collections::BTreeSet<InputModality>>> {
+    let Some(value) = value.filter(|value| !value.is_none()) else {
+        return Ok(None);
+    };
+    serde_json::from_value(value_from_python(value)?).map(Some).map_err(|error| {
+        PyValueError::new_err(format!(
+            "LlmTarget.input_modalities must contain only text, image, audio, video, or file: {error}"
+        ))
+    })
+}
+
+fn input_modality_name(modality: InputModality) -> &'static str {
+    match modality {
+        InputModality::Text => "text",
+        InputModality::Image => "image",
+        InputModality::Audio => "audio",
+        InputModality::Video => "video",
+        InputModality::File => "file",
+    }
 }
 
 pub(crate) fn endpoint_config_from_python(

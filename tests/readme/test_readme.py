@@ -30,6 +30,7 @@ ROUTING_DOC_PATHS = (
     REPO_ROOT / "docs" / "routing_algorithms" / "random_routing.md",
     REPO_ROOT / "docs" / "routing_algorithms" / "llm_classifier_routing.md",
     REPO_ROOT / "docs" / "routing_algorithms" / "stage_router_routing.md",
+    REPO_ROOT / "docs" / "operations" / "input_modalities.md",
 )
 
 

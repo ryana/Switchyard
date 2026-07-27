@@ -337,11 +337,13 @@ class TestDeepSeekOverrides:
             id="weak",
             model="nvidia/deepseek-ai/evals-deepseek-v4-pro",
             format=BackendFormat.OPENAI,
+            input_modalities=["text"],
             api_key="k",
             base_url="https://e/v1",
         )
         out = apply_deepseek_overrides(target)
         assert out.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+        assert out.input_modalities == ["text"]
 
     def test_deepseek_gets_batch_priority_header(self) -> None:
         target = LlmTarget(
@@ -400,6 +402,7 @@ class TestTierTimeoutDefaults:
             id="strong",
             model="aws/anthropic/bedrock-claude-opus-4-7",
             format=BackendFormat.OPENAI,
+            input_modalities=["text"],
             api_key="k",
             base_url="https://e/v1",
         )
@@ -407,6 +410,7 @@ class TestTierTimeoutDefaults:
         out = apply_default_tier_timeout(target, 123.0)
 
         assert out.endpoint.timeout_secs == 123.0
+        assert out.input_modalities == ["text"]
 
     def test_existing_timeout_wins(self) -> None:
         target = LlmTarget(

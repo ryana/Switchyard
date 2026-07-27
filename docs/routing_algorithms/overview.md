@@ -52,6 +52,11 @@ routes:
 Use the route name (`fast` or `smart`) as the request's model ID. A single
 bundle can serve multiple routes on the same host and port.
 
+When tiers accept different kinds of content, declare each target's
+`input_modalities` allowlist. See [Input Modalities](../operations/input_modalities.md)
+for a coding-agent route that combines a multimodal strong model with a
+text-only weak model.
+
 The examples use model IDs from the
 [OpenRouter model catalog](https://openrouter.ai/api/v1/models). Select IDs
 available to your account before deploying; catalog availability can change.

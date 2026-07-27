@@ -20,8 +20,9 @@ use switchyard_core::{
 use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 use super::common::{
-    build_reqwest_client, decode_sse_frame, drain_next_sse_frame, has_non_whitespace_bytes,
-    parse_json_sse_frame, request_wire_format, set_json_model, shared_translation_engine,
+    build_reqwest_client, decode_sse_frame, drain_next_sse_frame,
+    filter_unsupported_input_modalities, has_non_whitespace_bytes, parse_json_sse_frame,
+    request_wire_format, set_json_model, shared_translation_engine, translation_policy_for_target,
     ParsedSseFrame,
 };
 use super::{BackendSelection, BackendSelectionReason};
@@ -68,11 +69,12 @@ impl OpenAiNativeBackend {
 
     fn with_transport(target: LlmTarget, transport: Arc<dyn OpenAiTransport>) -> Result<Self> {
         validate_target_format(&target)?;
+        let translation_policy = translation_policy_for_target(&target);
         Ok(Self {
             target,
             transport,
             translation: shared_translation_engine(),
-            translation_policy: TranslationPolicy::default(),
+            translation_policy,
         })
     }
 
@@ -117,6 +119,11 @@ impl OpenAiNativeBackend {
                     .body
             }
         };
+        filter_unsupported_input_modalities(
+            &mut body,
+            target_request_type,
+            self.target.input_modalities.as_ref(),
+        );
         set_json_model(&mut body, self.target.model.as_str());
         if self.target.format == BackendFormat::OpenAi {
             ensure_stream_usage(&mut body);
@@ -583,7 +590,7 @@ mod tests {
     use std::sync::Mutex;
 
     use serde_json::json;
-    use switchyard_core::{EndpointConfig, LlmTargetId, ModelId};
+    use switchyard_core::{EndpointConfig, InputModality, LlmTargetId, ModelId};
 
     use super::*;
 
@@ -627,6 +634,7 @@ mod tests {
             id: LlmTargetId::from_static("primary"),
             model: ModelId::from_static("target-model"),
             format: BackendFormat::OpenAi,
+            input_modalities: None,
             endpoint: EndpointConfig {
                 base_url: Some("https://example.test/v1".to_string()),
                 api_key: Some("secret".to_string()),
@@ -635,6 +643,142 @@ mod tests {
             extra_body: None,
             extra_headers: BTreeMap::new(),
         }
+    }
+
+    fn image_requests() -> Vec<ChatRequest> {
+        vec![
+            ChatRequest::openai_chat(json!({
+                "model": "client-model",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "keep"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.test/image-marker.png"}
+                        }
+                    ]
+                }]
+            })),
+            ChatRequest::openai_responses(json!({
+                "model": "client-model",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "keep"},
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.test/image-marker.png"
+                        }
+                    ]
+                }]
+            })),
+            ChatRequest::anthropic(json!({
+                "model": "client-model",
+                "max_tokens": 128,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "keep"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "image-marker"
+                            }
+                        }
+                    ]
+                }]
+            })),
+        ]
+    }
+
+    #[test]
+    fn text_only_openai_targets_strip_images_from_every_inbound_format() -> Result<()> {
+        for target_format in [BackendFormat::OpenAi, BackendFormat::Responses] {
+            for request in image_requests() {
+                let original = request.body().clone();
+                let mut target = openai_target();
+                target.format = target_format;
+                target.input_modalities = Some([InputModality::Text].into_iter().collect());
+                let transport = Arc::new(FakeOpenAiTransport::with_error("ignored"));
+                let backend = OpenAiNativeBackend::with_transport(target, transport)?;
+
+                let body = backend.outbound_body(&request)?;
+
+                assert!(body.to_string().contains("keep"));
+                assert!(!body.to_string().contains("image-marker"));
+                assert_eq!(request.body(), &original);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn declared_image_and_unspecified_targets_preserve_images() -> Result<()> {
+        for input_modalities in [
+            None,
+            Some(
+                [InputModality::Text, InputModality::Image]
+                    .into_iter()
+                    .collect(),
+            ),
+        ] {
+            let mut target = openai_target();
+            target.input_modalities = input_modalities;
+            let transport = Arc::new(FakeOpenAiTransport::with_error("ignored"));
+            let backend = OpenAiNativeBackend::with_transport(target, transport)?;
+            let request = image_requests().remove(0);
+
+            let body = backend.outbound_body(&request)?;
+
+            assert!(body.to_string().contains("image-marker"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn target_modalities_populate_translation_capabilities() -> Result<()> {
+        let mut target = openai_target();
+        target.input_modalities = Some(
+            [InputModality::Text, InputModality::Audio]
+                .into_iter()
+                .collect(),
+        );
+        let transport = Arc::new(FakeOpenAiTransport::with_error("ignored"));
+        let backend = OpenAiNativeBackend::with_transport(target, transport)?;
+
+        assert_eq!(
+            backend
+                .translation_policy
+                .target_capabilities
+                .supports_images,
+            Some(false)
+        );
+        assert_eq!(
+            backend
+                .translation_policy
+                .target_capabilities
+                .supports_audio,
+            Some(true)
+        );
+        assert_eq!(
+            backend
+                .translation_policy
+                .target_capabilities
+                .supports_video,
+            Some(false)
+        );
+        assert_eq!(
+            backend
+                .translation_policy
+                .target_capabilities
+                .supports_files,
+            Some(false)
+        );
+        Ok(())
     }
 
     #[test]

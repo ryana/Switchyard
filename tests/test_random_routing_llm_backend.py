@@ -39,6 +39,7 @@ def _target(
     model: str,
     *,
     format: object = BackendFormat.OPENAI,
+    input_modalities: list[str] | None = None,
     api_key: str | None = "sk-test",
     base_url: str | None = "https://example.invalid/v1",
 ) -> LlmTarget:
@@ -46,6 +47,7 @@ def _target(
         id=target_id,
         model=model,
         format=format,
+        input_modalities=input_modalities,
         api_key=api_key,
         base_url=base_url,
     )
@@ -75,6 +77,7 @@ class TestNativeBackendConstruction:
             "weak",
             "nvidia/nvidia/nemotron-3-super-v3",
             format=BackendFormat.OPENAI,
+            input_modalities=["text"],
         )
 
         backend = build_native_backend(target)
@@ -82,6 +85,7 @@ class TestNativeBackendConstruction:
         assert backend.target.extra_body == {
             "chat_template_kwargs": {"enable_thinking": False},
         }
+        assert backend.target.input_modalities == ["text"]
 
     def test_explicit_extra_body_wins_over_runtime_defaults(self) -> None:
         target = LlmTarget(
@@ -114,7 +118,12 @@ class TestNativeBackendConstruction:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        target = _target("strong", "anthropic/claude-test", format=BackendFormat.AUTO)
+        target = _target(
+            "strong",
+            "anthropic/claude-test",
+            format=BackendFormat.AUTO,
+            input_modalities=["text", "image"],
+        )
         seen: list[LlmTarget] = []
 
         def fake_resolve(value: LlmTarget) -> BackendFormatResolution:
@@ -132,8 +141,10 @@ class TestNativeBackendConstruction:
         assert seen == [target, target]
         assert resolved.format == BackendFormat.ANTHROPIC
         assert resolved.model == target.model
+        assert resolved.input_modalities == ["text", "image"]
         assert isinstance(backend, AnthropicNativeBackend)
         assert backend.target.format == BackendFormat.ANTHROPIC
+        assert backend.target.input_modalities == ["text", "image"]
 
     @pytest.mark.parametrize("missing", ["base_url", "api_key"])
     def test_auto_resolution_requires_probe_inputs(self, missing: str) -> None:

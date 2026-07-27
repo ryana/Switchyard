@@ -82,6 +82,7 @@ def test_random_route_bundle_registers_model_keys_and_applies_defaults(
             "api_key": "${ROUTE_BUNDLE_KEY}",
             "base_url": "https://example.invalid/v1",
             "format": "openai",
+            "input_modalities": ["text"],
             "timeout": 30,
         },
         "routes": {
@@ -89,7 +90,11 @@ def test_random_route_bundle_registers_model_keys_and_applies_defaults(
                 "type": "random-routing",
                 "fallback_target_on_evict": "strong",
                 "strong": "model-1",
-                "weak": {"model": "model-2", "api_key": "sk-weak"},
+                "weak": {
+                    "model": "model-2",
+                    "api_key": "sk-weak",
+                    "input_modalities": ["text", "image"],
+                },
                 "strong_probability": 0.7,
             },
             "B": {
@@ -119,13 +124,17 @@ def test_random_route_bundle_registers_model_keys_and_applies_defaults(
     assert route_a.config.strong.model == "model-1"
     assert route_a.config.strong.api_key == "sk-default"
     assert route_a.config.strong.endpoint.base_url == "https://example.invalid/v1"
+    assert route_a.config.strong.input_modalities == ["text"]
     assert route_a.config.weak.model == "model-2"
     assert route_a.config.weak.api_key == "sk-weak"
+    assert route_a.config.weak.input_modalities == ["text", "image"]
     assert route_a.config.strong_probability == 0.7
 
     route_b = _random_processor(table.lookup_switchyard("B"))
     assert route_b.config.strong.model == "model-3"
     assert route_b.config.weak.model == "model-4"
+    assert route_b.config.strong.input_modalities == ["text"]
+    assert route_b.config.weak.input_modalities == ["text"]
     assert route_b.config.strong_probability == 0.2
 
 

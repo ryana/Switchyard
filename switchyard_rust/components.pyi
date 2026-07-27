@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from switchyard_rust.core import (
     ChatRequestType,
@@ -48,6 +48,7 @@ class LlmTarget:
     timeout: float | None
     extra_body: dict[str, Any] | None
     extra_headers: dict[str, str]
+    input_modalities: list[Literal["text", "image", "audio", "video", "file"]] | None
 
     def __init__(
         self,
@@ -62,6 +63,9 @@ class LlmTarget:
         timeout: float | None = None,
         extra_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
+        input_modalities: Iterable[
+            Literal["text", "image", "audio", "video", "file"]
+        ] | None = None,
     ) -> None: ...
     def to_dict(self) -> dict[str, Any]: ...
     def model_dump(self) -> dict[str, Any]: ...

@@ -71,6 +71,17 @@ That translation lets Claude Code, which speaks Anthropic Messages, run against
 an OpenAI-compatible model. The [Architecture](architecture.md) page documents
 the supported formats and request lifecycle.
 
+### Target input modalities
+
+Targets can declare an `input_modalities` allowlist containing `text`, `image`,
+`audio`, `video`, and `file`. Switchyard removes recognized unsupported
+content from the selected target's outbound request without mutating the
+original trajectory. Omitting the field preserves pass-through behavior when
+capabilities are unknown.
+
+See [Input Modalities](operations/input_modalities.md) for configuration,
+wire-format coverage, and exact filtering semantics.
+
 ## Programmatic Python profiles
 
 Embedded Python callers can construct typed profile configs and runtimes
