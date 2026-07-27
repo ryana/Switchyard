@@ -21,10 +21,12 @@ async-stream.workspace = true
 async-trait.workspace = true
 axum = "0.8"
 axum-server = { version = "0.8", default-features = false, features = ["tls-rustls"] }
+base64 = "0.22"
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util.workspace = true
 http.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.2.0" }
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "metrics", "reqwest-blocking-client", "reqwest-rustls", "trace"] }
@@ -43,6 +45,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
+webp = { version = "0.3.1", default-features = false }
 
 [dev-dependencies]
 async-trait.workspace = true

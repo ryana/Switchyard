@@ -10,7 +10,11 @@ use std::time::Duration;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 use switchyard_server::config::load_server_state;
+use switchyard_server::image_compression::{
+    ImageCompressionConfig, compress_image_payload,
+};
 use switchyard_server::{
     BoundServer, DEFAULT_LISTEN_BACKLOG, ServerResult, ServerRunOptions, flush_observability,
     initialize_observability,
@@ -33,10 +37,29 @@ struct PyServer {
 impl PyServer {
     /// Loads a TOML deployment and starts serving it on loopback.
     #[new]
-    #[pyo3(signature = (config, *, port=0))]
-    fn new(config: PathBuf, port: u16) -> PyResult<Self> {
+    #[pyo3(signature = (
+        config,
+        *,
+        port=0,
+        image_compression=false,
+        image_max_patch_tokens=Some(576)
+    ))]
+    fn new(
+        config: PathBuf,
+        port: u16,
+        image_compression: bool,
+        image_max_patch_tokens: Option<u32>,
+    ) -> PyResult<Self> {
         initialize_observability().map_err(server_error)?;
-        let state = load_server_state(config).map_err(server_error)?;
+        let mut state = load_server_state(config).map_err(server_error)?;
+        if image_compression {
+            state = state
+                .with_image_compression(ImageCompressionConfig {
+                    max_patch_tokens: image_max_patch_tokens,
+                    ..ImageCompressionConfig::default()
+                })
+                .map_err(server_error)?;
+        }
         let runtime = pyo3_async_runtimes::tokio::get_runtime();
         let server = {
             let _guard = runtime.enter();
@@ -155,9 +178,32 @@ fn server_error(error: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
 }
 
+/// Compress one image with the native request path for benchmark artifact capture.
+#[pyfunction]
+#[pyo3(signature = (payload, *, max_patch_tokens=Some(576)))]
+fn compress_image<'py>(
+    py: Python<'py>,
+    payload: &[u8],
+    max_patch_tokens: Option<u32>,
+) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyAny>)> {
+    let compressed = compress_image_payload(
+        payload,
+        ImageCompressionConfig {
+            max_patch_tokens,
+            ..ImageCompressionConfig::default()
+        },
+    )
+    .map_err(server_error)?;
+    Ok((
+        PyBytes::new(py, &compressed.payload),
+        crate::py_serde::to_python(py, &compressed.stats)?.into_bound(py),
+    ))
+}
+
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let server_module = PyModule::new(module.py(), "server")?;
     server_module.add_class::<PyServer>()?;
+    server_module.add_function(wrap_pyfunction!(compress_image, &server_module)?)?;
     module.add_submodule(&server_module)?;
     Ok(())
 }

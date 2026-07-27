@@ -40,10 +40,21 @@ class HttpStatsSource(StatsSource):
 class NativeServer:
     """Host one TOML deployment through the PyO3 Rust server binding."""
 
-    def __init__(self, config: Path) -> None:
+    def __init__(
+        self,
+        config: Path,
+        *,
+        image_compression: bool = False,
+        image_max_patch_tokens: int | None = 576,
+    ) -> None:
         from switchyard_rust.server import Server
 
-        self._server = Server(config, port=0)
+        self._server = Server(
+            config,
+            port=0,
+            image_compression=image_compression,
+            image_max_patch_tokens=image_max_patch_tokens,
+        )
         self.port: int = self._server.port
         self.base_url: str = self._server.base_url
         self.stats: StatsSource = HttpStatsSource(self.base_url)
