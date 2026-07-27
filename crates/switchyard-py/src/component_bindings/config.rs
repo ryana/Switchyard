@@ -196,6 +196,7 @@ impl PyLlmTarget {
         timeout=None,
         extra_body=None,
         extra_headers=None,
+        supports_images=None,
     ))]
     fn py_new(
         id: Option<String>,
@@ -209,6 +210,7 @@ impl PyLlmTarget {
         timeout: Option<f64>,
         extra_body: Option<&Bound<'_, PyAny>>,
         extra_headers: Option<&Bound<'_, PyAny>>,
+        supports_images: Option<bool>,
     ) -> PyResult<Self> {
         let mut endpoint = endpoint_config_from_python(endpoint)?;
         if base_url.is_some() {
@@ -281,6 +283,7 @@ impl PyLlmTarget {
                 model: ModelId::new(model)
                     .map_err(|error| PyValueError::new_err(format!("invalid model id: {error}")))?,
                 format: backend_format_from_python(format.or(backend_format))?,
+                supports_images,
                 endpoint,
                 extra_body,
                 extra_headers,
@@ -306,6 +309,11 @@ impl PyLlmTarget {
     #[getter]
     fn backend_format(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         backend_format_object(py, self.inner.format)
+    }
+
+    #[getter]
+    fn supports_images(&self) -> Option<bool> {
+        self.inner.supports_images
     }
 
     #[getter]
@@ -387,11 +395,17 @@ impl PyLlmTarget {
     }
 
     fn __repr__(&self) -> String {
+        let supports_images = match self.inner.supports_images {
+            Some(true) => "True",
+            Some(false) => "False",
+            None => "None",
+        };
         format!(
-            "LlmTarget(id={:?}, model={:?}, format='{}')",
+            "LlmTarget(id={:?}, model={:?}, format='{}', supports_images={})",
             self.inner.id.as_str(),
             self.inner.model.as_str(),
             backend_format_name(self.inner.format),
+            supports_images,
         )
     }
 }

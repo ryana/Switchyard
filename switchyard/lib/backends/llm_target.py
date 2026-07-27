@@ -22,6 +22,7 @@ def coerce_llm_target(value: object, *, default_id: str) -> LlmTarget:
                 id=default_id,
                 model=value.model,
                 format=value.format,
+                supports_images=value.supports_images,
                 endpoint=value.endpoint,
                 extra_body=value.extra_body,
                 extra_headers=value.extra_headers,
@@ -39,6 +40,7 @@ def coerce_llm_target(value: object, *, default_id: str) -> LlmTarget:
         raise TypeError("LlmTarget.model must be a string")
 
     target_format = data.pop("format", data.pop("backend_format", BackendFormat.OPENAI))
+    supports_images = data.pop("supports_images", None)
     endpoint = data.pop("endpoint", None)
     base_url = data.pop("base_url", None)
     api_key = data.pop("api_key", None)
@@ -54,6 +56,7 @@ def coerce_llm_target(value: object, *, default_id: str) -> LlmTarget:
         id=target_id,
         model=model,
         format=target_format,
+        supports_images=supports_images,
         endpoint=endpoint,
         base_url=base_url,
         api_key=api_key,
@@ -69,6 +72,7 @@ def llm_target_with_format(target: LlmTarget, target_format: BackendFormat) -> L
         id=target.id,
         model=target.model,
         format=target_format,
+        supports_images=target.supports_images,
         endpoint=target.endpoint,
         extra_body=target.extra_body,
         extra_headers=target.extra_headers,
@@ -85,6 +89,7 @@ def llm_target_with_runtime_defaults(target: LlmTarget) -> LlmTarget:
         id=target.id,
         model=target.model,
         format=target.format,
+        supports_images=target.supports_images,
         endpoint=target.endpoint,
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         extra_headers=target.extra_headers,

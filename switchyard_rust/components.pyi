@@ -48,6 +48,7 @@ class LlmTarget:
     timeout: float | None
     extra_body: dict[str, Any] | None
     extra_headers: dict[str, str]
+    supports_images: bool | None
 
     def __init__(
         self,
@@ -62,6 +63,7 @@ class LlmTarget:
         timeout: float | None = None,
         extra_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
+        supports_images: bool | None = None,
     ) -> None: ...
     def to_dict(self) -> dict[str, Any]: ...
     def model_dump(self) -> dict[str, Any]: ...

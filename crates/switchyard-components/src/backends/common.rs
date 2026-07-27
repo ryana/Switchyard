@@ -77,6 +77,73 @@ pub(crate) fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
+/// Removes image blocks from provider message content in an outbound request.
+///
+/// Only message and tool-result content is visited, so JSON Schema fields such
+/// as `{"type": "image"}` remain untouched. Empty content arrays become empty
+/// strings to keep the provider message shape valid.
+pub(crate) fn strip_image_content(body: &mut Value, request_type: ChatRequestType) {
+    let Some(body) = body.as_object_mut() else {
+        return;
+    };
+    let container = match request_type {
+        ChatRequestType::OpenAiResponses => "input",
+        ChatRequestType::OpenAiChat | ChatRequestType::Anthropic => "messages",
+    };
+
+    if let Some(value) = body.get_mut(container) {
+        strip_message_items(value);
+    }
+    if request_type == ChatRequestType::Anthropic {
+        if let Some(system) = body.get_mut("system") {
+            strip_image_blocks(system);
+        }
+    }
+}
+
+// Visits each provider message or Responses input item without changing the container shape.
+fn strip_message_items(value: &mut Value) {
+    let Value::Array(items) = value else {
+        return;
+    };
+    items.retain(|item| !is_image_block(item));
+    for item in items {
+        strip_nested_content(item);
+    }
+}
+
+// Removes image objects only from arrays used as message content.
+fn strip_image_blocks(value: &mut Value) {
+    let Value::Array(items) = value else {
+        return;
+    };
+    items.retain(|item| !is_image_block(item));
+    for item in items.iter_mut() {
+        strip_nested_content(item);
+    }
+    if items.is_empty() {
+        *value = Value::String(String::new());
+    }
+}
+
+// Descends through remaining content blocks so Anthropic tool results are covered.
+fn strip_nested_content(value: &mut Value) {
+    let Value::Object(object) = value else {
+        return;
+    };
+    if let Some(content) = object.get_mut("content") {
+        strip_image_blocks(content);
+    }
+}
+
+// Recognizes image block spellings accepted across supported request formats.
+fn is_image_block(value: &Value) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some("image" | "image_url" | "input_image")
+    )
+}
+
 /// Drains one complete SSE frame from the buffer when a boundary is present.
 pub(crate) fn drain_next_sse_frame(
     buffer: &mut Vec<u8>,
@@ -188,5 +255,88 @@ mod tests {
         assert_eq!(value, json!({"text": "é"}));
         assert!(buffer.is_empty());
         Ok(())
+    }
+
+    #[test]
+    fn strips_openai_chat_images_without_touching_tool_schemas() {
+        let mut body = json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "keep"},
+                    {"type": "image_url", "image_url": {"url": "https://example.test/a.png"}}
+                ]
+            }],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "inspect",
+                    "parameters": {"type": "object", "properties": {"kind": {"type": "image"}}}
+                }
+            }]
+        });
+
+        strip_image_content(&mut body, ChatRequestType::OpenAiChat);
+
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!([{"type": "text", "text": "keep"}])
+        );
+        assert_eq!(
+            body["tools"][0]["function"]["parameters"]["properties"]["kind"]["type"],
+            "image"
+        );
+    }
+
+    #[test]
+    fn strips_responses_images_and_keeps_input_container_valid() {
+        let mut body = json!({
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_image", "image_url": "data:image/png;base64,abc"}]
+            }]
+        });
+
+        strip_image_content(&mut body, ChatRequestType::OpenAiResponses);
+
+        assert_eq!(body["input"][0]["content"], "");
+        assert!(body["input"].is_array());
+    }
+
+    #[test]
+    fn strips_anthropic_images_from_system_messages_and_tool_results() {
+        let mut body = json!({
+            "system": [
+                {"type": "text", "text": "system"},
+                {"type": "image", "source": {"type": "base64", "data": "system-image"}}
+            ],
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "data": "message-image"}},
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": [
+                            {"type": "text", "text": "keep"},
+                            {"type": "image", "source": {"type": "base64", "data": "tool-image"}}
+                        ]
+                    }
+                ]
+            }]
+        });
+
+        strip_image_content(&mut body, ChatRequestType::Anthropic);
+
+        assert_eq!(body["system"], json!([{"type": "text", "text": "system"}]));
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!([{
+                "type": "tool_result",
+                "tool_use_id": "tool-1",
+                "content": [{"type": "text", "text": "keep"}]
+            }])
+        );
     }
 }

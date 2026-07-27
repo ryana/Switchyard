@@ -62,6 +62,12 @@ pub struct LlmTarget {
     pub model: ModelId,
     /// Native wire format expected by the upstream target.
     pub format: BackendFormat,
+    /// Whether the upstream model accepts image content.
+    ///
+    /// When false, native backends remove image blocks from the target-local
+    /// outbound request. None preserves the existing pass-through behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_images: Option<bool>,
     /// Connection settings for the upstream target.
     #[serde(default)]
     pub endpoint: EndpointConfig,
@@ -118,6 +124,7 @@ impl LlmTarget {
             id,
             model,
             format: BackendFormat::Auto,
+            supports_images: None,
             endpoint: EndpointConfig::default(),
             extra_body: None,
             extra_headers: BTreeMap::new(),

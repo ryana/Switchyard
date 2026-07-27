@@ -124,6 +124,8 @@ def llm_target_to_route_dict(target: LlmTarget) -> dict[str, Any]:
         "model": target.model,
         "format": str(target.format),
     }
+    if target.supports_images is not None:
+        data["supports_images"] = target.supports_images
     if target.endpoint.api_key:
         data["api_key"] = target.endpoint.api_key
     if target.endpoint.base_url:
@@ -138,6 +140,7 @@ _TARGET_DEFAULT_KEYS = frozenset({
     "base_url",
     "format",
     "backend_format",
+    "supports_images",
     "timeout",
     "timeout_secs",
     "extra_body",

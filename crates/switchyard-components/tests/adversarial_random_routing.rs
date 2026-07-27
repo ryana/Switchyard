@@ -161,12 +161,14 @@ fn llm_target_format_wire_values_match_python_config_contract() -> Result<()> {
         ModelId::from_static("model"),
     );
     assert_eq!(minimal.format, BackendFormat::Auto);
+    assert_eq!(minimal.supports_images, None);
     assert_eq!(minimal.endpoint, EndpointConfig::default());
 
     let explicit: LlmTarget = serde_json::from_value(json!({
         "id": "explicit",
         "model": "model",
         "format": "openai",
+        "supports_images": false,
         "endpoint": {
             "base_url": "https://example.test/v1",
             "api_key": "secret",
@@ -175,6 +177,7 @@ fn llm_target_format_wire_values_match_python_config_contract() -> Result<()> {
     }))
     .map_err(|error| SwitchyardError::Other(error.to_string()))?;
     assert_eq!(explicit.format, BackendFormat::OpenAi);
+    assert_eq!(explicit.supports_images, Some(false));
     assert_eq!(
         explicit.endpoint.base_url.as_deref(),
         Some("https://example.test/v1")

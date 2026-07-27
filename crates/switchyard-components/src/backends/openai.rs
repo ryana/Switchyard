@@ -22,7 +22,7 @@ use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 use super::common::{
     build_reqwest_client, decode_sse_frame, drain_next_sse_frame, has_non_whitespace_bytes,
     parse_json_sse_frame, request_wire_format, set_json_model, shared_translation_engine,
-    ParsedSseFrame,
+    strip_image_content, ParsedSseFrame,
 };
 use super::{BackendSelection, BackendSelectionReason};
 use crate::telemetry::{telemetry_header_value, SWITCHYARD_VERSION_HEADER};
@@ -68,11 +68,13 @@ impl OpenAiNativeBackend {
 
     fn with_transport(target: LlmTarget, transport: Arc<dyn OpenAiTransport>) -> Result<Self> {
         validate_target_format(&target)?;
+        let mut translation_policy = TranslationPolicy::default();
+        translation_policy.target_capabilities.supports_images = target.supports_images;
         Ok(Self {
             target,
             transport,
             translation: shared_translation_engine(),
-            translation_policy: TranslationPolicy::default(),
+            translation_policy,
         })
     }
 
@@ -117,6 +119,9 @@ impl OpenAiNativeBackend {
                     .body
             }
         };
+        if self.target.supports_images == Some(false) {
+            strip_image_content(&mut body, target_request_type);
+        }
         set_json_model(&mut body, self.target.model.as_str());
         if self.target.format == BackendFormat::OpenAi {
             ensure_stream_usage(&mut body);
@@ -627,6 +632,7 @@ mod tests {
             id: LlmTargetId::from_static("primary"),
             model: ModelId::from_static("target-model"),
             format: BackendFormat::OpenAi,
+            supports_images: None,
             endpoint: EndpointConfig {
                 base_url: Some("https://example.test/v1".to_string()),
                 api_key: Some("secret".to_string()),
@@ -635,6 +641,93 @@ mod tests {
             extra_body: None,
             extra_headers: BTreeMap::new(),
         }
+    }
+
+    fn image_requests() -> Vec<ChatRequest> {
+        vec![
+            ChatRequest::openai_chat(json!({
+                "model": "client-model",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "keep"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.test/image-marker.png"}
+                        }
+                    ]
+                }]
+            })),
+            ChatRequest::openai_responses(json!({
+                "model": "client-model",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "keep"},
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.test/image-marker.png"
+                        }
+                    ]
+                }]
+            })),
+            ChatRequest::anthropic(json!({
+                "model": "client-model",
+                "max_tokens": 128,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "keep"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "image-marker"
+                            }
+                        }
+                    ]
+                }]
+            })),
+        ]
+    }
+
+    #[test]
+    fn text_only_openai_targets_strip_images_from_every_inbound_format() -> Result<()> {
+        for target_format in [BackendFormat::OpenAi, BackendFormat::Responses] {
+            for request in image_requests() {
+                let original = request.body().clone();
+                let mut target = openai_target();
+                target.format = target_format;
+                target.supports_images = Some(false);
+                let transport = Arc::new(FakeOpenAiTransport::with_error("ignored"));
+                let backend = OpenAiNativeBackend::with_transport(target, transport)?;
+
+                let body = backend.outbound_body(&request)?;
+
+                assert!(body.to_string().contains("keep"));
+                assert!(!body.to_string().contains("image-marker"));
+                assert_eq!(request.body(), &original);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn image_capable_and_unspecified_targets_preserve_images() -> Result<()> {
+        for supports_images in [None, Some(true)] {
+            let mut target = openai_target();
+            target.supports_images = supports_images;
+            let transport = Arc::new(FakeOpenAiTransport::with_error("ignored"));
+            let backend = OpenAiNativeBackend::with_transport(target, transport)?;
+            let request = image_requests().remove(0);
+
+            let body = backend.outbound_body(&request)?;
+
+            assert!(body.to_string().contains("image-marker"));
+        }
+        Ok(())
     }
 
     #[test]

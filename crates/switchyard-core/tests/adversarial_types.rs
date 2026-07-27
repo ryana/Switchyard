@@ -145,6 +145,7 @@ fn llm_target_rejects_provider_tuning_fields() -> TestResult {
         "id": "primary",
         "model": "gpt-5",
         "format": "openai",
+        "supports_images": false,
         "endpoint": {
             "base_url": "https://example.test/v1",
             "api_key": null,
@@ -161,6 +162,7 @@ fn llm_target_rejects_provider_tuning_fields() -> TestResult {
         "id": "primary",
         "model": "gpt-5",
         "format": "openai",
+        "supports_images": false,
         "endpoint": {
             "base_url": "https://example.test/v1",
             "api_key": null,
@@ -170,6 +172,7 @@ fn llm_target_rejects_provider_tuning_fields() -> TestResult {
     assert_eq!(target.id, LlmTargetId::from_static("primary"));
     assert_eq!(target.model, ModelId::from_static("gpt-5"));
     assert_eq!(target.format, BackendFormat::OpenAi);
+    assert_eq!(target.supports_images, Some(false));
     let serialized = serde_json::to_value(target)?;
     assert_eq!(
         serialized["endpoint"]["base_url"],

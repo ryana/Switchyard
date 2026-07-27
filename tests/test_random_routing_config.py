@@ -67,17 +67,20 @@ class TestTierConstruction:
         assert tier.api_key is None
         assert tier.base_url is None
         assert tier.timeout is None
+        assert tier.supports_images is None
 
     def test_all_fields(self):
         tier = LlmTarget(
             model="claude-opus-4-6",
             format=BackendFormat.ANTHROPIC,
+            supports_images=True,
             api_key="sk-ant-xxx",
             base_url="https://api.anthropic.com",
             timeout=30.0,
         )
         assert tier.model == "claude-opus-4-6"
         assert tier.format is BackendFormat.ANTHROPIC
+        assert tier.supports_images is True
         assert tier.api_key == "sk-ant-xxx"
         assert tier.base_url == "https://api.anthropic.com"
         assert tier.timeout == 30.0
@@ -174,6 +177,7 @@ class TestTargetSerialization:
             id="target",
             model="m",
             format=BackendFormat.OPENAI,
+            supports_images=False,
             api_key="k",
             base_url="https://example.test/v1",
             timeout=3.0,
@@ -183,6 +187,7 @@ class TestTargetSerialization:
             "id": "target",
             "model": "m",
             "format": "openai",
+            "supports_images": False,
             "endpoint": {
                 "api_key": "k",
                 "base_url": "https://example.test/v1",
