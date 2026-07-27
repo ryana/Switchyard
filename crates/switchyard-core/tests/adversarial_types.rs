@@ -10,7 +10,7 @@ use futures_core::Stream;
 use serde_json::json;
 use switchyard_core::{
     BackendFormat, ChatRequest, ChatRequestType, ChatResponse, ChatResponseType, ComponentId,
-    LlmTarget, LlmTargetId, ModelId, ProxyContext, StreamEvent,
+    InputModality, LlmTarget, LlmTargetId, ModelId, ProxyContext, StreamEvent,
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -145,7 +145,7 @@ fn llm_target_rejects_provider_tuning_fields() -> TestResult {
         "id": "primary",
         "model": "gpt-5",
         "format": "openai",
-        "supports_images": false,
+        "input_modalities": ["text"],
         "endpoint": {
             "base_url": "https://example.test/v1",
             "api_key": null,
@@ -162,7 +162,7 @@ fn llm_target_rejects_provider_tuning_fields() -> TestResult {
         "id": "primary",
         "model": "gpt-5",
         "format": "openai",
-        "supports_images": false,
+        "input_modalities": ["text"],
         "endpoint": {
             "base_url": "https://example.test/v1",
             "api_key": null,
@@ -172,7 +172,10 @@ fn llm_target_rejects_provider_tuning_fields() -> TestResult {
     assert_eq!(target.id, LlmTargetId::from_static("primary"));
     assert_eq!(target.model, ModelId::from_static("gpt-5"));
     assert_eq!(target.format, BackendFormat::OpenAi);
-    assert_eq!(target.supports_images, Some(false));
+    assert_eq!(
+        target.input_modalities,
+        Some([InputModality::Text].into_iter().collect())
+    );
     let serialized = serde_json::to_value(target)?;
     assert_eq!(
         serialized["endpoint"]["base_url"],
@@ -180,6 +183,19 @@ fn llm_target_rejects_provider_tuning_fields() -> TestResult {
     );
     assert!(serialized.get("tuning").is_none());
     Ok(())
+}
+
+// Verifies target capability typos fail loudly instead of silently disabling content.
+#[test]
+fn llm_target_rejects_unknown_input_modalities() {
+    assert!(serde_json::from_value::<LlmTarget>(json!({
+        "id": "primary",
+        "model": "gpt-5",
+        "format": "openai",
+        "input_modalities": ["text", "vision"],
+        "endpoint": {}
+    }))
+    .is_err());
 }
 
 // Verifies streaming responses are distinguishable from buffered JSON responses.

@@ -68,7 +68,7 @@ def test_config_bindings_validate_and_own_values() -> None:
         endpoint=endpoint,
         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         extra_headers={"X-Inference-Priority": "batch"},
-        supports_images=False,
+        input_modalities=["text", "image"],
     )
 
     assert BackendFormat("openai") == BackendFormat.OPENAI
@@ -85,13 +85,16 @@ def test_config_bindings_validate_and_own_values() -> None:
     }
     assert target.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
     assert target.extra_headers == {"X-Inference-Priority": "batch"}
-    assert target.supports_images is False
+    assert target.input_modalities == ["text", "image"]
+    assert 'input_modalities=["text", "image"]' in repr(target)
     assert IntakeQueueFullPolicy("block") == IntakeQueueFullPolicy.BLOCK
     positional_target = LlmTarget("target-b", "model-b", None, None, endpoint)
     assert positional_target.endpoint.base_url == "https://example.test/v1"
 
     with pytest.raises(ValueError, match="Unknown backend format"):
         BackendFormat("bedrock")
+    with pytest.raises(ValueError, match="input_modalities"):
+        LlmTarget(model="model-a", input_modalities=["text", "vision"])
     with pytest.raises(ValueError, match="must not be empty"):
         LlmTarget(" ", "model-a")
     with pytest.raises(ValueError, match="requires a model string"):

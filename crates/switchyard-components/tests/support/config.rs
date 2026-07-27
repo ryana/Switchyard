@@ -28,7 +28,7 @@ pub fn openai_target(id: &'static str, model: &'static str, base_url: &str) -> R
         id: LlmTargetId::from_static(id),
         model: ModelId::from_static(model),
         format: BackendFormat::OpenAi,
-        supports_images: None,
+        input_modalities: None,
         endpoint: EndpointConfig {
             base_url: Some(base_url.to_string()),
             api_key: Some("test-key".to_string()),
@@ -49,7 +49,7 @@ pub fn anthropic_target(
         id: LlmTargetId::from_static(id),
         model: ModelId::from_static(model),
         format: BackendFormat::Anthropic,
-        supports_images: None,
+        input_modalities: None,
         endpoint: EndpointConfig {
             base_url: Some(base_url.to_string()),
             api_key: Some("test-key".to_string()),

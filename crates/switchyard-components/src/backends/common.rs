@@ -3,12 +3,13 @@
 
 //! Shared helpers for native backend implementations.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
-use switchyard_core::{ChatRequestType, Result, SwitchyardError};
-use switchyard_translation::{TranslationEngine, WireFormat};
+use switchyard_core::{ChatRequestType, InputModality, LlmTarget, Result, SwitchyardError};
+use switchyard_translation::{TranslationEngine, TranslationPolicy, WireFormat};
 
 pub(crate) enum ParsedSseFrame {
     /// Frame contained a JSON payload.
@@ -23,6 +24,19 @@ pub(crate) enum ParsedSseFrame {
 pub(crate) fn shared_translation_engine() -> Arc<TranslationEngine> {
     static ENGINE: OnceLock<Arc<TranslationEngine>> = OnceLock::new();
     Arc::clone(ENGINE.get_or_init(|| Arc::new(TranslationEngine::default())))
+}
+
+/// Builds translation capabilities from an optional target modality allowlist.
+pub(crate) fn translation_policy_for_target(target: &LlmTarget) -> TranslationPolicy {
+    let mut policy = TranslationPolicy::default();
+    policy.target_capabilities.supports_images =
+        target.supports_input_modality(InputModality::Image);
+    policy.target_capabilities.supports_audio =
+        target.supports_input_modality(InputModality::Audio);
+    policy.target_capabilities.supports_video =
+        target.supports_input_modality(InputModality::Video);
+    policy.target_capabilities.supports_files = target.supports_input_modality(InputModality::File);
+    policy
 }
 
 /// Builds a reqwest client with validated optional timeout.
@@ -77,12 +91,20 @@ pub(crate) fn set_json_model(body: &mut Value, model: &str) {
     }
 }
 
-/// Removes image blocks from provider message content in an outbound request.
+/// Removes unsupported input modalities from provider message content.
 ///
 /// Only message and tool-result content is visited, so JSON Schema fields such
 /// as `{"type": "image"}` remain untouched. Empty content arrays become empty
-/// strings to keep the provider message shape valid.
-pub(crate) fn strip_image_content(body: &mut Value, request_type: ChatRequestType) {
+/// strings to keep the provider message shape valid. Unknown block types are
+/// preserved so a future provider extension is not deleted by older code.
+pub(crate) fn filter_unsupported_input_modalities(
+    body: &mut Value,
+    request_type: ChatRequestType,
+    supported: Option<&BTreeSet<InputModality>>,
+) {
+    let Some(supported) = supported else {
+        return;
+    };
     let Some(body) = body.as_object_mut() else {
         return;
     };
@@ -92,34 +114,46 @@ pub(crate) fn strip_image_content(body: &mut Value, request_type: ChatRequestTyp
     };
 
     if let Some(value) = body.get_mut(container) {
-        strip_message_items(value);
+        filter_message_items(value, supported);
     }
     if request_type == ChatRequestType::Anthropic {
         if let Some(system) = body.get_mut("system") {
-            strip_image_blocks(system);
+            filter_content_blocks(system, supported);
         }
     }
 }
 
 // Visits each provider message or Responses input item without changing the container shape.
-fn strip_message_items(value: &mut Value) {
+fn filter_message_items(value: &mut Value, supported: &BTreeSet<InputModality>) {
+    if let Value::String(text) = value {
+        if !supported.contains(&InputModality::Text) {
+            text.clear();
+        }
+        return;
+    }
     let Value::Array(items) = value else {
         return;
     };
-    items.retain(|item| !is_image_block(item));
+    items.retain(|item| !is_unsupported_content_block(item, supported));
     for item in items {
-        strip_nested_content(item);
+        filter_nested_content(item, supported);
     }
 }
 
-// Removes image objects only from arrays used as message content.
-fn strip_image_blocks(value: &mut Value) {
+// Removes unsupported objects only from arrays used as message content.
+fn filter_content_blocks(value: &mut Value, supported: &BTreeSet<InputModality>) {
+    if let Value::String(text) = value {
+        if !supported.contains(&InputModality::Text) {
+            text.clear();
+        }
+        return;
+    }
     let Value::Array(items) = value else {
         return;
     };
-    items.retain(|item| !is_image_block(item));
+    items.retain(|item| !is_unsupported_content_block(item, supported));
     for item in items.iter_mut() {
-        strip_nested_content(item);
+        filter_nested_content(item, supported);
     }
     if items.is_empty() {
         *value = Value::String(String::new());
@@ -127,21 +161,29 @@ fn strip_image_blocks(value: &mut Value) {
 }
 
 // Descends through remaining content blocks so Anthropic tool results are covered.
-fn strip_nested_content(value: &mut Value) {
+fn filter_nested_content(value: &mut Value, supported: &BTreeSet<InputModality>) {
     let Value::Object(object) = value else {
         return;
     };
     if let Some(content) = object.get_mut("content") {
-        strip_image_blocks(content);
+        filter_content_blocks(content, supported);
     }
 }
 
-// Recognizes image block spellings accepted across supported request formats.
-fn is_image_block(value: &Value) -> bool {
-    matches!(
-        value.get("type").and_then(Value::as_str),
-        Some("image" | "image_url" | "input_image")
-    )
+// Recognizes modality block spellings accepted across supported request formats.
+fn content_block_modality(value: &Value) -> Option<InputModality> {
+    match value.get("type").and_then(Value::as_str) {
+        Some("text" | "input_text" | "output_text" | "refusal") => Some(InputModality::Text),
+        Some("image" | "image_url" | "input_image") => Some(InputModality::Image),
+        Some("audio" | "input_audio") => Some(InputModality::Audio),
+        Some("video" | "input_video") => Some(InputModality::Video),
+        Some("file" | "input_file" | "document") => Some(InputModality::File),
+        _ => None,
+    }
+}
+
+fn is_unsupported_content_block(value: &Value, supported: &BTreeSet<InputModality>) -> bool {
+    content_block_modality(value).is_some_and(|modality| !supported.contains(&modality))
 }
 
 /// Drains one complete SSE frame from the buffer when a boundary is present.
@@ -231,6 +273,10 @@ mod tests {
 
     use super::*;
 
+    fn modalities(values: impl IntoIterator<Item = InputModality>) -> BTreeSet<InputModality> {
+        values.into_iter().collect()
+    }
+
     // Multi-byte UTF-8 split across network chunks should wait for a full frame.
     #[test]
     fn buffers_incomplete_utf8_until_a_complete_sse_frame_arrives() -> Result<()> {
@@ -258,13 +304,17 @@ mod tests {
     }
 
     #[test]
-    fn strips_openai_chat_images_without_touching_tool_schemas() {
+    fn filters_openai_chat_modalities_without_touching_tool_schemas() {
         let mut body = json!({
             "messages": [{
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "keep"},
-                    {"type": "image_url", "image_url": {"url": "https://example.test/a.png"}}
+                    {"type": "image_url", "image_url": {"url": "https://example.test/a.png"}},
+                    {"type": "input_audio", "input_audio": {"data": "audio-marker"}},
+                    {"type": "input_video", "video_url": "https://example.test/a.mp4"},
+                    {"type": "input_file", "file_id": "file-marker"},
+                    {"type": "provider_extension", "data": "unknown-marker"}
                 ]
             }],
             "tools": [{
@@ -275,12 +325,20 @@ mod tests {
                 }
             }]
         });
+        let supported = modalities([InputModality::Text]);
 
-        strip_image_content(&mut body, ChatRequestType::OpenAiChat);
+        filter_unsupported_input_modalities(
+            &mut body,
+            ChatRequestType::OpenAiChat,
+            Some(&supported),
+        );
 
         assert_eq!(
             body["messages"][0]["content"],
-            json!([{"type": "text", "text": "keep"}])
+            json!([
+                {"type": "text", "text": "keep"},
+                {"type": "provider_extension", "data": "unknown-marker"}
+            ])
         );
         assert_eq!(
             body["tools"][0]["function"]["parameters"]["properties"]["kind"]["type"],
@@ -289,23 +347,57 @@ mod tests {
     }
 
     #[test]
-    fn strips_responses_images_and_keeps_input_container_valid() {
+    fn filters_responses_modalities_and_keeps_input_container_valid() {
         let mut body = json!({
             "input": [{
                 "type": "message",
                 "role": "user",
-                "content": [{"type": "input_image", "image_url": "data:image/png;base64,abc"}]
+                "content": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+                    {"type": "input_audio", "audio": {"data": "keep-audio"}},
+                    {"type": "input_file", "file_id": "file-marker"}
+                ]
             }]
         });
+        let supported = modalities([InputModality::Text, InputModality::Audio]);
 
-        strip_image_content(&mut body, ChatRequestType::OpenAiResponses);
+        filter_unsupported_input_modalities(
+            &mut body,
+            ChatRequestType::OpenAiResponses,
+            Some(&supported),
+        );
 
-        assert_eq!(body["input"][0]["content"], "");
+        assert_eq!(
+            body["input"][0]["content"],
+            json!([{"type": "input_audio", "audio": {"data": "keep-audio"}}])
+        );
         assert!(body["input"].is_array());
     }
 
     #[test]
-    fn strips_anthropic_images_from_system_messages_and_tool_results() {
+    fn replaces_empty_message_content_with_a_string_placeholder() {
+        let mut body = json!({
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,abc"}
+                ]
+            }]
+        });
+        let supported = modalities([InputModality::Text]);
+
+        filter_unsupported_input_modalities(
+            &mut body,
+            ChatRequestType::OpenAiResponses,
+            Some(&supported),
+        );
+
+        assert_eq!(body["input"][0]["content"], json!(""));
+    }
+
+    #[test]
+    fn filters_anthropic_modalities_from_system_messages_and_tool_results() {
         let mut body = json!({
             "system": [
                 {"type": "text", "text": "system"},
@@ -320,14 +412,20 @@ mod tests {
                         "tool_use_id": "tool-1",
                         "content": [
                             {"type": "text", "text": "keep"},
-                            {"type": "image", "source": {"type": "base64", "data": "tool-image"}}
+                            {"type": "image", "source": {"type": "base64", "data": "tool-image"}},
+                            {"type": "document", "source": {"type": "base64", "data": "keep-file"}}
                         ]
                     }
                 ]
             }]
         });
+        let supported = modalities([InputModality::Text, InputModality::File]);
 
-        strip_image_content(&mut body, ChatRequestType::Anthropic);
+        filter_unsupported_input_modalities(
+            &mut body,
+            ChatRequestType::Anthropic,
+            Some(&supported),
+        );
 
         assert_eq!(body["system"], json!([{"type": "text", "text": "system"}]));
         assert_eq!(
@@ -335,8 +433,26 @@ mod tests {
             json!([{
                 "type": "tool_result",
                 "tool_use_id": "tool-1",
-                "content": [{"type": "text", "text": "keep"}]
+                "content": [
+                    {"type": "text", "text": "keep"},
+                    {"type": "document", "source": {"type": "base64", "data": "keep-file"}}
+                ]
             }])
         );
+    }
+
+    #[test]
+    fn omitted_modalities_preserve_the_outbound_body() {
+        let original = json!({
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": "marker"}}]
+            }]
+        });
+        let mut body = original.clone();
+
+        filter_unsupported_input_modalities(&mut body, ChatRequestType::OpenAiChat, None);
+
+        assert_eq!(body, original);
     }
 }

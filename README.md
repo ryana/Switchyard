@@ -140,6 +140,9 @@ strategy-specific page:
 - [LLM Classifier Routing](docs/routing_algorithms/llm_classifier_routing.md)
 - [Stage-Router Routing](docs/routing_algorithms/stage_router_routing.md)
 
+For routes that mix multimodal and text-only targets, see
+[Input Modalities](docs/operations/input_modalities.md).
+
 For multi-turn classifier sessions, see
 [Session Affinity (Sticky Routing)](docs/routing_algorithms/sticky_routing.md).
 
@@ -213,6 +216,7 @@ See [Installation](INSTALLATION.md) for a full breakdown of what each extra adds
 - **[Cli Reference](docs/cli_reference.md)**: canonical reference for every `switchyard` subcommand and flag
 - **[Architecture](docs/architecture.md)**: system context and end-to-end request flow
 - **[Routing Algorithms](docs/routing_algorithms/)**: signal-driven weak/strong stage-router routing: picker layers, signal dimensions, and calibration data.
+- **[Input Modalities](docs/operations/input_modalities.md)**: per-target text, image, audio, video, and file filtering
 - **[Contributing](CONTRIBUTING.md)**: dev setup, testing, CI gates, PR process
 - **[Development](DEVELOPMENT.md)**: project structure, benchmarks, conventions
 - **[Agents](AGENTS.md)**: full design philosophy and architectural patterns

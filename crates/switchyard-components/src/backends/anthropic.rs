@@ -22,9 +22,10 @@ use switchyard_translation::{
 };
 
 use super::common::{
-    build_reqwest_client, decode_sse_frame, drain_next_sse_frame, has_non_whitespace_bytes,
-    parse_json_sse_frame, request_wire_format, set_json_model, shared_translation_engine,
-    strip_image_content, ParsedSseFrame,
+    build_reqwest_client, decode_sse_frame, drain_next_sse_frame,
+    filter_unsupported_input_modalities, has_non_whitespace_bytes, parse_json_sse_frame,
+    request_wire_format, set_json_model, shared_translation_engine, translation_policy_for_target,
+    ParsedSseFrame,
 };
 use super::BackendSelection;
 use crate::telemetry::{telemetry_header_value, SWITCHYARD_VERSION_HEADER};
@@ -71,8 +72,7 @@ impl AnthropicNativeBackend {
 
     fn with_transport(target: LlmTarget, transport: Arc<dyn AnthropicTransport>) -> Result<Self> {
         validate_target_format(&target)?;
-        let mut translation_policy = TranslationPolicy::default();
-        translation_policy.target_capabilities.supports_images = target.supports_images;
+        let translation_policy = translation_policy_for_target(&target);
         Ok(Self {
             target,
             transport,
@@ -100,9 +100,11 @@ impl AnthropicNativeBackend {
                     .body
             }
         };
-        if self.target.supports_images == Some(false) {
-            strip_image_content(&mut body, ChatRequestType::Anthropic);
-        }
+        filter_unsupported_input_modalities(
+            &mut body,
+            ChatRequestType::Anthropic,
+            self.target.input_modalities.as_ref(),
+        );
         set_json_model(&mut body, self.target.model.as_str());
         strip_anthropic_incompatible_fields(&mut body);
         normalize_anthropic_body(&mut body);
@@ -554,7 +556,7 @@ mod tests {
     use std::sync::Mutex;
 
     use serde_json::json;
-    use switchyard_core::{EndpointConfig, LlmTargetId, ModelId};
+    use switchyard_core::{EndpointConfig, InputModality, LlmTargetId, ModelId};
 
     use super::*;
 
@@ -598,7 +600,7 @@ mod tests {
             id: LlmTargetId::from_static("primary"),
             model: ModelId::from_static("target-claude"),
             format: BackendFormat::Anthropic,
-            supports_images: None,
+            input_modalities: None,
             endpoint: EndpointConfig {
                 base_url: Some("https://example.test/v1".to_string()),
                 api_key: Some("secret".to_string()),
@@ -664,7 +666,7 @@ mod tests {
         for request in image_requests() {
             let original = request.body().clone();
             let mut target = anthropic_target();
-            target.supports_images = Some(false);
+            target.input_modalities = Some([InputModality::Text].into_iter().collect());
             let transport = Arc::new(FakeAnthropicTransport::with_error("ignored"));
             let backend = AnthropicNativeBackend::with_transport(target, transport)?;
 

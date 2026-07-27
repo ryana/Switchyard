@@ -34,6 +34,7 @@ nav:
       - Stage-Router Routing: routing_algorithms/stage_router_routing.md
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
   - Operations:
+      - Input Modalities: operations/input_modalities.md
       - Context-Window Handling: operations/context_window.md
   - Reference:
       - CLI Reference: cli_reference.md

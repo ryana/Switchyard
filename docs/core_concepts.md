@@ -71,34 +71,16 @@ That translation lets Claude Code, which speaks Anthropic Messages, run against
 an OpenAI-compatible model. The [Architecture](architecture.md) page documents
 the supported formats and request lifecycle.
 
-### Image-capable targets
+### Target input modalities
 
-Set `supports_images` on each target when a route can select both multimodal
-and text-only models:
+Targets can declare an `input_modalities` allowlist containing `text`, `image`,
+`audio`, `video`, and `file`. Switchyard removes recognized unsupported
+content from the selected target's outbound request without mutating the
+original trajectory. Omitting the field preserves pass-through behavior when
+capabilities are unknown.
 
-```yaml
-routes:
-  coding-agent:
-    type: random_routing
-    strong:
-      model: azure/anthropic/claude-opus-4-7
-      supports_images: true
-    weak:
-      model: nvidia/nvidia/nemotron-3-super-v3
-      supports_images: false
-    strong_probability: 0.5
-    fallback_target_on_evict: strong
-```
-
-When the selected target sets `supports_images: false`, Switchyard removes
-image blocks from the target-local outbound request after format translation.
-Text in the same message is preserved, and the original inbound trajectory is
-not mutated, so a later retry against an image-capable target still receives
-the image. `supports_images: true` preserves images explicitly; omitting the
-field preserves the existing pass-through behavior.
-
-Programmatic profiles use the same field:
-`LlmTarget(model="nvidia/nvidia/nemotron-3-super-v3", supports_images=False)`.
+See [Input Modalities](operations/input_modalities.md) for configuration,
+wire-format coverage, and exact filtering semantics.
 
 ## Programmatic Python profiles
 
