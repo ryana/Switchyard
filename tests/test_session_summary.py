@@ -13,13 +13,17 @@ def _snapshot(
     completion: int = 0,
     cached: int = 0,
     models: dict | None = None,
+    image_compression: dict | None = None,
 ) -> dict:
-    return {
+    snapshot = {
         "total_requests": total_requests,
         "total_errors": total_errors,
         "total_tokens": {"prompt": prompt, "completion": completion, "cached": cached},
         "models": models or {},
     }
+    if image_compression is not None:
+        snapshot["image_compression"] = image_compression
+    return snapshot
 
 
 def test_empty_snapshot_returns_empty_string():
@@ -113,3 +117,22 @@ def test_summary_omits_cost_for_unknown_model():
     )
     out = _format_summary(snap)
     assert "$" not in out
+
+
+def test_summary_shows_image_compression_savings():
+    snap = _snapshot(
+        total_requests=2,
+        prompt=1000,
+        completion=50,
+        image_compression={
+            "images_seen": 3,
+            "images_optimized": 3,
+            "bytes_before": 3 * 1024 * 1024,
+            "bytes_after": 300 * 1024,
+        },
+    )
+    out = _format_summary(snap)
+
+    assert "3/3 optimized" in out
+    assert "3.0 MB → 300.0 KB" in out
+    assert "90.2% saved" in out

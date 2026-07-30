@@ -59,10 +59,15 @@ def test_reference_marks_removed_setup_commands() -> None:
 def test_reference_lists_launcher_contract() -> None:
     launch = _subparsers(_build_parser())["launch"]
     text = CLI_REFERENCE.read_text()
-    for parser in _subparsers(launch).values():
-        assert _long_options(parser) == {"--model", "--config"}
-    assert "--model" in text
-    assert "--config" in text
+    expected = {
+        "claude": {"--model", "--config"},
+        "codex": {"--model", "--config", "--image-compression"},
+        "openclaw": {"--model", "--config"},
+    }
+    for name, parser in _subparsers(launch).items():
+        assert _long_options(parser) == expected[name]
+    for option in set().union(*expected.values()):
+        assert option in text
 
 
 def test_reference_lists_server_contract() -> None:

@@ -26,6 +26,11 @@ Supported agents are `claude`, `codex`, and `openclaw`.
 | `--config PATH` | No | Native TOML deployment. Defaults to the packaged OpenRouter deployment. |
 | `-- ...` | No | Arguments forwarded unchanged to the coding agent. |
 
+The Codex launcher also accepts `--image-compression`. It converts inline images to WebP and
+resizes them to a default budget of 576 estimated 32×32 patches before routing the request.
+Remote image URLs and animated images pass through unchanged. The live footer and session summary
+report the image count and payload savings.
+
 ### Packaged Deployment
 
 The packaged deployment exposes the route ID `switchyard` and uses OpenRouter:
@@ -35,6 +40,12 @@ export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
 switchyard launch claude --model switchyard
 switchyard launch codex --model switchyard
 switchyard launch openclaw --model switchyard
+```
+
+Enable inline-image compression for a Codex session:
+
+```bash
+switchyard launch codex --model switchyard --image-compression -- --image screenshot.png
 ```
 
 ### Custom Deployment

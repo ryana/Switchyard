@@ -78,8 +78,18 @@ def _stats_with_model_call(
     })
 
 
-def _footer(stats: _Stats, *, model: str = "nvidia/some/default") -> LiveStatsFooter:
-    return LiveStatsFooter(stats, model=model, health=_StubHealth())  # type: ignore[arg-type]
+def _footer(
+    stats: _Stats,
+    *,
+    model: str = "nvidia/some/default",
+    image_compression: bool = False,
+) -> LiveStatsFooter:
+    return LiveStatsFooter(
+        stats,
+        model=model,
+        health=_StubHealth(),  # type: ignore[arg-type]
+        image_compression=image_compression,
+    )
 
 
 def test_footer_height_at_zero_traffic() -> None:
@@ -100,6 +110,12 @@ def test_aggregate_row_shows_totals_without_model_name() -> None:
     assert "567 out" in agg
     # The aggregate row never names a model — that's the active row's job.
     assert "some-model" not in agg
+
+
+def test_aggregate_row_shows_cost_for_priced_model() -> None:
+    stats = _stats_with_model_call("gpt-5.4-mini-2026-03-17")
+    aggregate = _strip_ansi(_footer(stats).render(cols=120)[0][0])
+    assert "$0.0033" in aggregate
 
 
 def test_active_row_shows_model_with_recent_traffic() -> None:
@@ -153,3 +169,25 @@ def test_new_tier_adds_a_row_on_next_render() -> None:
     tier_texts = " ".join(_strip_ansi(r[0]) for r in rows[1:])
     assert "first" in tier_texts
     assert "second" in tier_texts
+
+
+def test_image_compression_adds_live_savings_row() -> None:
+    stats = _stats_with_model_call("gpt-5.4-mini-2026-03-17")
+    stats.snapshot = {
+        **stats.snapshot,
+        "image_compression": {
+            "images_seen": 2,
+            "images_optimized": 2,
+            "bytes_before": 204_800,
+            "bytes_after": 51_200,
+        },
+    }
+    footer = _footer(stats, image_compression=True)
+    rows = footer.render(cols=120)
+    image_row = _strip_ansi(rows[1][0])
+
+    assert footer.height == 3
+    assert len(rows) == 3
+    assert "2/2 optimized" in image_row
+    assert "200.0 KB → 50.0 KB" in image_row
+    assert "75.0% saved" in image_row

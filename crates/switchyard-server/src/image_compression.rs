@@ -124,9 +124,7 @@ impl ImageCompressionStats {
         self.bytes_before = self
             .bytes_before
             .saturating_add(outcome.source_bytes as u64);
-        self.bytes_after = self
-            .bytes_after
-            .saturating_add(outcome.output_bytes as u64);
+        self.bytes_after = self.bytes_after.saturating_add(outcome.output_bytes as u64);
         self.bytes_saved = self.bytes_saved.saturating_add(
             (outcome.source_bytes as u64).saturating_sub(outcome.output_bytes as u64),
         );
@@ -255,14 +253,16 @@ fn optimize_raw_source(
         return Ok(None);
     };
     if source.get("type").and_then(Value::as_str) == Some("base64") {
-        let data = source
-            .get("data")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ServerError::new("inline image base64 source must contain string data"))?;
+        let data = source.get("data").and_then(Value::as_str).ok_or_else(|| {
+            ServerError::new("inline image base64 source must contain string data")
+        })?;
         let payload = decode_base64(data, config.max_input_bytes)?;
         let outcome = compress_payload(&payload, config)?;
         if let Some(output) = &outcome.output {
-            source.insert("media_type".to_string(), Value::String(WEBP_MEDIA_TYPE.to_string()));
+            source.insert(
+                "media_type".to_string(),
+                Value::String(WEBP_MEDIA_TYPE.to_string()),
+            );
             source.insert("data".to_string(), Value::String(BASE64.encode(output)));
         }
         return Ok(Some(outcome));
@@ -365,9 +365,9 @@ fn compress_payload(
         .map_err(|error| image_error("could not be decoded", error))?;
     image.apply_orientation(orientation);
     let source_size = (image.width(), image.height());
-    let target_size = config
-        .max_patch_tokens
-        .map_or(source_size, |budget| fit_size_to_patch_budget(source_size, budget));
+    let target_size = config.max_patch_tokens.map_or(source_size, |budget| {
+        fit_size_to_patch_budget(source_size, budget)
+    });
     if target_size != source_size {
         image = image.resize_exact(target_size.0, target_size.1, FilterType::Lanczos3);
     }
@@ -393,10 +393,10 @@ fn compress_payload(
     })
 }
 
-fn image_reader<'a>(
-    payload: &'a [u8],
+fn image_reader(
+    payload: &[u8],
     config: ImageCompressionConfig,
-) -> ServerResult<ImageReader<Cursor<&'a [u8]>>> {
+) -> ServerResult<ImageReader<Cursor<&[u8]>>> {
     let mut reader = ImageReader::new(Cursor::new(payload))
         .with_guessed_format()
         .map_err(|error| image_error("format could not be read", error))?;
@@ -503,10 +503,8 @@ fn fit_size_to_patch_budget(size: (u32, u32), max_patch_tokens: u32) -> (u32, u3
     while low <= high {
         let candidate_longest = low + (high - low) / 2;
         let candidate = (
-            (u64::from(width) * u64::from(candidate_longest) / u64::from(longest))
-                .max(1) as u32,
-            (u64::from(height) * u64::from(candidate_longest) / u64::from(longest))
-                .max(1) as u32,
+            (u64::from(width) * u64::from(candidate_longest) / u64::from(longest)).max(1) as u32,
+            (u64::from(height) * u64::from(candidate_longest) / u64::from(longest)).max(1) as u32,
         );
         if patch_tokens(candidate) <= u64::from(max_patch_tokens) {
             best = candidate;
@@ -541,7 +539,12 @@ mod tests {
         });
         let mut output = Vec::new();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 95)
-            .write_image(image.as_raw(), width, height, image::ExtendedColorType::Rgb8)
+            .write_image(
+                image.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgb8,
+            )
             .map_err(|error| image_error("test fixture could not be encoded", error))?;
         Ok(output)
     }

@@ -70,14 +70,14 @@ condition.
 
 | Condition | Switchyard configuration | Purpose |
 |---|---|---|
-| Off | No image processor | Establish quality, cost, bytes, and latency |
+| Off | Native image compression disabled | Establish quality, cost, bytes, and latency |
 | WebP only | `max_patch_tokens=None` | Isolate transport-byte savings |
 | Conservative | `max_patch_tokens=2304` | Preserve high visual fidelity |
 | Balanced | `max_patch_tokens=1024` | Find a likely operating point |
 | Default | `max_patch_tokens=576` | Evaluate the current default |
 | Aggressive | `max_patch_tokens=256` | Expose the quality-failure boundary |
 
-Send images as inline base64 content. The current processor intentionally leaves remote URLs and
+Send images as inline base64 content. The native request path intentionally leaves remote URLs and
 animated images unchanged.
 
 Run the detection benchmark more than once per condition and randomize condition order. Keep the
@@ -158,7 +158,7 @@ When this proposal is implemented, keep the following under `benchmark/`:
 
 ## Deferred Next Step
 
-Do not build the full fixture while informally evaluating the processor. First use a smaller
+Do not build the full fixture while informally evaluating the compression path. First use a smaller
 multi-turn image task to verify that inline payload rewriting, provider usage accounting, and visible
 answer quality behave as expected. Promote that harness into this benchmark only after those basics
 are confirmed.

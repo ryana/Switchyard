@@ -50,6 +50,22 @@ def _format_summary(snapshot: Mapping[str, object]) -> str:
         f"  requests : {req_str}",
         f"  tokens   : {tok_str}",
     ]
+    image_compression = _mapping(snapshot, "image_compression")
+    images_seen = _int(image_compression, "images_seen")
+    if images_seen:
+        images_optimized = _int(image_compression, "images_optimized")
+        bytes_before = _int(image_compression, "bytes_before")
+        bytes_after = _int(image_compression, "bytes_after")
+        saved_percent = (bytes_before - bytes_after) / bytes_before * 100 if bytes_before else 0.0
+        lines.extend(
+            [
+                f"  images   : {images_optimized:,}/{images_seen:,} optimized",
+                (
+                    f"  payload  : {_format_bytes(bytes_before)} → "
+                    f"{_format_bytes(bytes_after)}  ({saved_percent:.1f}% saved)"
+                ),
+            ]
+        )
 
     models = _mapping(snapshot, "models")
     if models:
@@ -82,3 +98,11 @@ def _int(data: Mapping[str, object], key: str) -> int:
     """Safely extract an int from snapshot data, returning 0 on missing/wrong type."""
     value = data.get(key)
     return value if isinstance(value, int) else 0
+
+
+def _format_bytes(value: int) -> str:
+    if value < 1024:
+        return f"{value} B"
+    if value < 1024 * 1024:
+        return f"{value / 1024:.1f} KB"
+    return f"{value / (1024 * 1024):.1f} MB"

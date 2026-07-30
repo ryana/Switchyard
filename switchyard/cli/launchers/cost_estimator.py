@@ -57,6 +57,15 @@ class ModelPriceData:
 MODEL_PRICING: dict[str, ModelPriceData] = {
     # --- OpenAI / NVIDIA Inference Hub (OpenAI wire format) ---
     # OpenAI caching has no write premium; ``cache_write`` = ``input``.
+    # GPT-5.4 mini — OpenAI list price (verified 2026-07-30):
+    # $0.75 input / $0.075 cached input / $4.50 output per 1M tokens.
+    # Direct OpenAI launches use the unqualified ids below.
+    "gpt-5.4-mini": ModelPriceData(
+        input=0.75, output=4.50, cached=0.075, cache_write=0.75,
+    ),
+    "gpt-5.4-mini-2026-03-17": ModelPriceData(
+        input=0.75, output=4.50, cached=0.075, cache_write=0.75,
+    ),
     "openai/openai/gpt-5.2": ModelPriceData(
         input=1.75, output=14.00, cached=0.175, cache_write=1.75,
     ),

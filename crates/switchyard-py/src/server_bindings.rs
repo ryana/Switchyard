@@ -12,9 +12,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use switchyard_server::config::load_server_state;
-use switchyard_server::image_compression::{
-    ImageCompressionConfig, compress_image_payload,
-};
+use switchyard_server::image_compression::{ImageCompressionConfig, compress_image_payload};
 use switchyard_server::{
     BoundServer, DEFAULT_LISTEN_BACKLOG, ServerResult, ServerRunOptions, flush_observability,
     initialize_observability,
