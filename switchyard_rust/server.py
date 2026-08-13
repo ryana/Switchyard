@@ -16,7 +16,14 @@ if TYPE_CHECKING:
     class Server:
         """Running loopback instance of the native Switchyard server."""
 
-        def __init__(self, config: str | PathLike[str], *, port: int = 0) -> None: ...
+        def __init__(
+            self,
+            config: str | PathLike[str],
+            *,
+            port: int = 0,
+            image_compression: bool = False,
+            image_max_patch_tokens: int | None = 576,
+        ) -> None: ...
 
         @property
         def port(self) -> int: ...
@@ -35,12 +42,20 @@ if TYPE_CHECKING:
             traceback: object | None,
         ) -> bool: ...
 
+    def compress_image(
+        payload: bytes,
+        *,
+        max_patch_tokens: int | None = 576,
+    ) -> tuple[bytes, dict[str, int]]:
+        """Compress one image through the native request path."""
+        ...
+
 
 def __getattr__(name: str) -> object:
-    if name == "Server":
+    if name in {"Server", "compress_image"}:
         native: Any = load_native()
-        return native.server.Server
+        return getattr(native.server, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["Server"]
+__all__ = ["Server", "compress_image"]

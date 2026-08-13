@@ -4,6 +4,7 @@
 //! Rust HTTP server for libsy algorithms.
 
 pub mod config;
+pub mod image_compression;
 mod metrics;
 mod observability;
 mod response;
@@ -44,6 +45,9 @@ use tracing::{Instrument, Level};
 
 use switchyard_translation::{WireFormat, decode_request};
 
+use crate::image_compression::{
+    ImageCompressionConfig, optimize_request as optimize_image_request,
+};
 use crate::response::into_http_response;
 use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
 
@@ -135,6 +139,7 @@ pub struct ServerState {
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
+    image_compression: Option<ImageCompressionConfig>,
 }
 
 #[derive(Clone)]
@@ -229,12 +234,20 @@ impl ServerState {
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
+            image_compression: None,
         })
     }
 
     /// Enables durable per-request routing records at `path`.
     pub fn with_routing_log(mut self, path: impl Into<PathBuf>) -> ServerResult<Self> {
         self.routing_log = Some(SharedRoutingLog::new(path.into())?);
+        Ok(self)
+    }
+
+    /// Enables bounded inline-image compression before routed model calls.
+    pub fn with_image_compression(mut self, config: ImageCompressionConfig) -> ServerResult<Self> {
+        self.image_compression = Some(config.validate()?);
+        self.stats.enable_image_compression();
         Ok(self)
     }
 
@@ -687,10 +700,18 @@ async fn handle_llm_request(
     routing_log_context: Option<routing_log::RoutingLogContext>,
 ) -> Response {
     let cache_probe = state.track_cache_eligibility.then(|| prefix_probe(&body));
-    let (route, request) = match resolve_route(&state, metadata, body, wire_format) {
+    let (route, mut request) = match resolve_route(&state, metadata, body, wire_format) {
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
+    if let Some(config) = state.image_compression {
+        let (optimized, compression_stats) = match optimize_image_request(request, config).await {
+            Ok(result) => result,
+            Err(error) => return invalid_body_error(error.to_string()),
+        };
+        request = optimized;
+        state.stats.record_image_compression(compression_stats);
+    }
     let algorithm = Arc::clone(&route.algorithm);
     let client_router = route.target_clients.clone();
     let observer = stats_observer(

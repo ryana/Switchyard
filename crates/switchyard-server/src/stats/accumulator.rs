@@ -10,6 +10,8 @@ use parking_lot::{Mutex, MutexGuard};
 use prometheus::Registry;
 use serde::Serialize;
 
+use crate::image_compression::ImageCompressionStats;
+
 use super::algorithms::{AlgorithmStats, AlgorithmStatsSnapshot};
 use super::cache_eligibility::PrefixProbe;
 use switchyard_protocol::ModelId;
@@ -94,6 +96,18 @@ impl StatsAccumulator {
         self.lock().routing_overhead.record(routing_overhead_ms);
     }
 
+    /// Marks image compression enabled so empty snapshots remain visible to launchers.
+    pub(crate) fn enable_image_compression(&self) {
+        self.lock().image_compression = Some(ImageCompressionStats::default());
+    }
+
+    /// Records aggregate compression counters from one inbound request.
+    pub(crate) fn record_image_compression(&self, stats: ImageCompressionStats) {
+        if let Some(total) = &mut self.lock().image_compression {
+            total.add(stats);
+        }
+    }
+
     /// Records one successful classifier or judge call.
     pub(crate) fn record_classifier_success(
         &self,
@@ -157,6 +171,7 @@ struct StatsAccumulatorInner {
     classifier_requests: u64,
     classifier_errors: u64,
     algorithm_stats: AlgorithmStats,
+    image_compression: Option<ImageCompressionStats>,
 }
 
 impl StatsAccumulatorInner {
@@ -171,6 +186,7 @@ impl StatsAccumulatorInner {
             classifier_requests: 0,
             classifier_errors: 0,
             algorithm_stats: AlgorithmStats::new(registry, algorithms),
+            image_compression: None,
         }
     }
 
@@ -198,6 +214,7 @@ impl StatsAccumulatorInner {
             routing_fallbacks: self.routing_fallbacks,
             classifier,
             algorithm_stats: self.algorithm_stats.snapshot(),
+            image_compression: self.image_compression,
         }
     }
 
@@ -211,6 +228,9 @@ impl StatsAccumulatorInner {
         self.classifier_requests = 0;
         self.classifier_errors = 0;
         self.algorithm_stats.reset();
+        if self.image_compression.is_some() {
+            self.image_compression = Some(ImageCompressionStats::default());
+        }
     }
 }
 
@@ -321,6 +341,8 @@ pub(crate) struct StatsSnapshot {
     pub routing_fallbacks: RoutingFallbackStats,
     pub classifier: ClassifierStatsSnapshot,
     pub algorithm_stats: AlgorithmStatsSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_compression: Option<ImageCompressionStats>,
 }
 
 /// Legacy fallback counters retained in the stats response shape.
@@ -545,6 +567,39 @@ mod tests {
         assert_eq!(
             stats.prefix_eligibility(&ModelId::from("model/a"), &probe),
             0.0
+        );
+    }
+
+    #[test]
+    fn image_compression_stats_accumulate_and_reset_without_disabling() {
+        let stats = StatsAccumulator::default();
+        stats.enable_image_compression();
+        stats.record_image_compression(ImageCompressionStats {
+            images_seen: 2,
+            images_optimized: 1,
+            bytes_before: 1_000,
+            bytes_after: 400,
+            bytes_saved: 600,
+            ..ImageCompressionStats::default()
+        });
+
+        assert_eq!(
+            stats.snapshot().image_compression,
+            Some(ImageCompressionStats {
+                images_seen: 2,
+                images_optimized: 1,
+                bytes_before: 1_000,
+                bytes_after: 400,
+                bytes_saved: 600,
+                ..ImageCompressionStats::default()
+            })
+        );
+
+        stats.reset();
+
+        assert_eq!(
+            stats.snapshot().image_compression,
+            Some(ImageCompressionStats::default())
         );
     }
 

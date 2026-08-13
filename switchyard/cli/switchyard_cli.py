@@ -35,6 +35,12 @@ def _add_launch_parser(
             metavar="PATH",
             help="TOML deployment (default: packaged OpenRouter deployment).",
         )
+        if name == "codex":
+            agent.add_argument(
+                "--image-compression",
+                action="store_true",
+                help="Compress inline images to a 576-patch WebP budget.",
+            )
         agent.add_argument(
             args_dest,
             nargs=argparse.REMAINDER,

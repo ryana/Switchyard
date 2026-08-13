@@ -134,9 +134,13 @@ def _supervise_codex(
         return _EXIT_SIGINT
 
 
-def _start_native_server(config: Path) -> NativeServer:
+def _start_native_server(
+    config: Path,
+    *,
+    image_compression: bool = False,
+) -> NativeServer:
     """Start the native server; kept separate for supervision tests."""
-    return NativeServer(config)
+    return NativeServer(config, image_compression=image_compression)
 
 
 def _run_codex_with_switchyard(
@@ -144,6 +148,8 @@ def _run_codex_with_switchyard(
     display_model: str,
     codex_args: list[str],
     codex_model_catalog: Sequence[CodexModelCatalogEntry],
+    *,
+    image_compression: bool = False,
 ) -> int:
     """Host a native deployment and run Codex against it."""
     codex_bin = _find_codex_binary()
@@ -156,7 +162,7 @@ def _run_codex_with_switchyard(
 
     silence_launch_loggers(local_logger=logger)
     log_path = configure_debug_file_logging(display_model=display_model)
-    server = _start_native_server(config)
+    server = _start_native_server(config, image_compression=image_compression)
     resolved_port = server.port
     stats = server.stats
     model_catalog_json: str | None = None
@@ -190,6 +196,7 @@ def _run_codex_with_switchyard(
                 display_model,
                 ProxyHealthMonitor(resolved_port),
                 strategy_label="config",
+                image_compression=image_compression,
             )
             return ShellTUI(
                 command=_codex_command(
@@ -221,6 +228,8 @@ def launch_codex_config(
     config: Path,
     model: str,
     codex_args: list[str],
+    *,
+    image_compression: bool = False,
 ) -> int:
     """Run Codex against a native server TOML deployment."""
     catalog = [
@@ -235,4 +244,5 @@ def launch_codex_config(
         display_model=model,
         codex_args=codex_args,
         codex_model_catalog=catalog,
+        image_compression=image_compression,
     )

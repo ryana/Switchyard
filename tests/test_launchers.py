@@ -26,8 +26,18 @@ def test_cli_exposes_only_launch() -> None:
     assert set(_subparsers(_build_parser())) == {"launch"}
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw"])
-def test_launcher_surface_is_model_config_and_forwarded_args(agent: str) -> None:
+@pytest.mark.parametrize(
+    ("agent", "extra_options"),
+    [
+        ("claude", set()),
+        ("codex", {"--image-compression"}),
+        ("openclaw", set()),
+    ],
+)
+def test_launcher_surface_is_model_config_and_forwarded_args(
+    agent: str,
+    extra_options: set[str],
+) -> None:
     launch = _subparsers(_build_parser())["launch"]
     parser = _subparsers(launch)[agent]
     options = {
@@ -36,7 +46,7 @@ def test_launcher_surface_is_model_config_and_forwarded_args(agent: str) -> None
         for option in action.option_strings
         if option != "--help"
     }
-    assert options == {"-h", "--model", "--config"}
+    assert options == {"-h", "--model", "--config", *extra_options}
 
     args = parser.parse_args(["--model", "switchyard", "--", "--version"])
     assert args.model == "switchyard"
@@ -62,9 +72,18 @@ def test_native_server_passes_config_directly_to_binding(
         port = 4321
         base_url = "http://127.0.0.1:4321"
 
-        def __init__(self, path: Path, *, port: int) -> None:
+        def __init__(
+            self,
+            path: Path,
+            *,
+            port: int,
+            image_compression: bool,
+            image_max_patch_tokens: int | None,
+        ) -> None:
             captured["path"] = path
             captured["port"] = port
+            captured["image_compression"] = image_compression
+            captured["image_max_patch_tokens"] = image_max_patch_tokens
 
         def close(self) -> None:
             captured["closed"] = True
@@ -75,9 +94,58 @@ def test_native_server_passes_config_directly_to_binding(
     server = NativeServer(config)
     server.close()
 
-    assert captured == {"path": config, "port": 0, "closed": True}
+    assert captured == {
+        "path": config,
+        "port": 0,
+        "image_compression": False,
+        "image_max_patch_tokens": 576,
+        "closed": True,
+    }
     assert server.port == 4321
     assert config.exists()
+
+
+def test_native_server_enables_image_compression(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "routes.toml"
+    config.write_text("schema_version = 1\n")
+    captured: dict[str, object] = {}
+
+    class FakeServer:
+        port = 4321
+        base_url = "http://127.0.0.1:4321"
+
+        def __init__(
+            self,
+            path: Path,
+            *,
+            port: int,
+            image_compression: bool,
+            image_max_patch_tokens: int | None,
+        ) -> None:
+            captured.update(
+                path=path,
+                port=port,
+                image_compression=image_compression,
+                image_max_patch_tokens=image_max_patch_tokens,
+            )
+
+        def close(self) -> None:
+            return None
+
+    import switchyard_rust.server
+
+    monkeypatch.setattr(switchyard_rust.server, "Server", FakeServer)
+    NativeServer(config, image_compression=True, image_max_patch_tokens=256).close()
+
+    assert captured == {
+        "path": config,
+        "port": 0,
+        "image_compression": True,
+        "image_max_patch_tokens": 256,
+    }
 
 
 def test_missing_explicit_config_is_a_cli_error(tmp_path: Path) -> None:

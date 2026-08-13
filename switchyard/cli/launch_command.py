@@ -41,6 +41,7 @@ def cmd_launch_codex(args: argparse.Namespace) -> None:
             config=_config_path(args.config),
             model=args.model,
             codex_args=strip_forwarded_args(args.codex_args),
+            image_compression=args.image_compression,
         )
     )
 
