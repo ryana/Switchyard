@@ -19,6 +19,8 @@
 pub mod backend;
 pub mod client;
 pub mod error;
+pub mod jev_choices;
+pub mod jev_race;
 pub mod metrics;
 mod observability;
 mod observation;

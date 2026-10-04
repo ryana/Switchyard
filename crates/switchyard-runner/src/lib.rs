@@ -6,6 +6,7 @@
 mod algorithm;
 mod config;
 mod failure;
+mod jev_race_config;
 mod provider_key_redactor;
 mod route;
 mod runner;

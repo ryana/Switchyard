@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.inference]
+format = "openai_chat"
+base_url = "https://inference-api.nvidia.com/v1"
+api_key_env = "INFERENCE_HUB_KEY"
+max_retries = 0
+failure_cooldown_ms = 0
+timeout_ms = 120000
+
+[targets.agent]
+id = "azure/openai/gpt-4.1"
+llm_client = "inference"
+
+[routes.baseline]
+id = "sy-baseline"
+type = "passthrough"
+target = "agent"
+
+[routes.baseline.jev_race]
+enabled = false
+audit_directory = "tmp/jev-race/baseline"
+
+[routes.race]
+id = "sy-race"
+type = "passthrough"
+target = "agent"
+
+[routes.race.jev_race]
+api_key_env = "JEV_KEY"
+endpoint = "https://api.typesafe.ai/v1/systemone"
+model = "jev-1.13.0"
+threshold = 0.90
+max_hold_ms = 400
+observed_retail_ids = false
+audit_directory = "tmp/jev-race/race"
+
+[routes.user]
+id = "sy-user"
+type = "passthrough"
+target = "agent"
+
+[routes.user.jev_race]
+enabled = false
+audit_directory = "tmp/jev-race/user"

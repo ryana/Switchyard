@@ -74,6 +74,9 @@ const FORWARDED_UPSTREAM_HEADERS: &[&str] = &[
     "tracestate",
     "x-litellm-response-cost",
     "x-request-id",
+    "x-switchyard-winner",
+    "x-switchyard-usage-source",
+    "x-switchyard-canceled-llm-usage",
 ];
 const FORWARDED_UPSTREAM_HEADER_PREFIXES: &[&str] =
     &["anthropic-ratelimit-", "x-ratelimit-", "x-upstream-"];
@@ -2034,12 +2037,15 @@ mod tests {
         }
     }
 
-    // LiteLLM's cost header passes through to the client; auth headers do not.
+    // Cost and usage attribution pass through to the client; auth headers do not.
     #[test]
     fn upstream_header_forwarding_covers_litellm_cost() {
         for name in [
             "baggage",
             "x-litellm-response-cost",
+            "x-switchyard-winner",
+            "x-switchyard-usage-source",
+            "x-switchyard-canceled-llm-usage",
             "x-ratelimit-remaining",
             "x-upstream-retry",
         ] {

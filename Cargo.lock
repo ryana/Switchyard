@@ -2349,6 +2349,7 @@ dependencies = [
 name = "switchyard-llm-client"
 version = "0.3.0"
 dependencies = [
+ "async-stream",
  "async-trait",
  "futures",
  "futures-util",
@@ -2358,6 +2359,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "reqwest",
+ "serde",
  "serde_json",
  "switchyard-libsy",
  "switchyard-protocol",
