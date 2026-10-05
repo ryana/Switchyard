@@ -63,6 +63,39 @@ They turn IDs from earlier tool results into candidate arguments for
 `get_user_details`, `get_order_details`, and `get_product_details`. These rules
 never read the benchmark database or future messages. They are off by default.
 
+`observed_domain_ids = true` separately opts into airline and telecom ID choices.
+Airline supports `get_user_details`, `get_reservation_details`, and
+`cancel_reservation`. Telecom supports `get_customer_by_id`, `get_details_by_id`,
+`get_data_usage`, `resume_line`, `enable_roaming`, `disable_roaming`, and
+`send_payment_request`. Every required argument must be available. The adapter
+reads named IDs and reservation/line/bill arrays only from prior non-error JSON
+tool results; it does not extract them from prose or user text. Schema constraints
+still apply. This supplies candidates, not authorization: the decision must still
+obey authentication, confirmation, and action-order policies.
+
+JSON Schema `default` remains an annotation. For an optional Boolean, omission,
+`false`, and `true` remain distinct choices. Generated tool-call IDs contain only
+letters, digits, and underscores, allowing clients such as ToolSandbox to use
+them as variable names without changing tool semantics.
+
+## Compare identical requests
+
+Set `observe_only = true` in the race table on a separate diagnostic route. Both
+services finish and the route always returns the normal model response unchanged.
+No winning branch cancels the other. JEV has a 30-second diagnostic timeout;
+streaming diagnostic requests are rejected before starting either service.
+
+Record `normal_complete_ms` and `jev_decision_ms` from each audit summary. The
+diagnostic HTTP duration includes waiting for both and is not either service's
+response time. Use a zero threshold to retain all valid choices, then compare
+scores and the normal race deadline during analysis. `NONE`, malformed answers,
+errors, and predictions arriving after the deadline remain in the captures.
+
+Complete tool-call agreement is separate from correctness. Audit policy and
+action ordering independently; an LLM response or passing benchmark grade is not
+proof that a candidate action was allowed. Repeated draws of one input do not
+provide independent correctness examples.
+
 ## Measurements and limits
 
 The optional `audit_directory` saves per-request records. It is relative to the

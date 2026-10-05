@@ -82,6 +82,7 @@ fn finite_values(value: &Value) -> Result<Vec<Value>, String> {
             "enum",
             "description",
             "title",
+            "default",
             "minimum",
             "maximum",
             "exclusiveMinimum",
@@ -203,6 +204,27 @@ fn lookup_argument(name: &str) -> Option<&'static str> {
     }
 }
 
+fn domain_identifier(tool: &str, argument: &str) -> Option<&'static str> {
+    match (tool, argument) {
+        ("get_user_details", "user_id") => Some("user_id"),
+        ("get_reservation_details" | "cancel_reservation", "reservation_id") => {
+            Some("reservation_id")
+        }
+        ("get_customer_by_id", "customer_id") => Some("customer_id"),
+        ("get_details_by_id", "id") => Some("telecom_id"),
+        (
+            "get_data_usage" | "resume_line" | "enable_roaming" | "disable_roaming",
+            "customer_id",
+        ) => Some("customer_id"),
+        ("get_data_usage" | "resume_line" | "enable_roaming" | "disable_roaming", "line_id") => {
+            Some("line_id")
+        }
+        ("send_payment_request", "customer_id") => Some("customer_id"),
+        ("send_payment_request", "bill_id") => Some("bill_id"),
+        _ => None,
+    }
+}
+
 fn observe(value: &Value, ids: &mut BTreeMap<String, BTreeSet<String>>) {
     match value {
         Value::Object(map) => {
@@ -223,6 +245,24 @@ fn observe(value: &Value, ids: &mut BTreeMap<String, BTreeSet<String>>) {
                         ids.get_mut("order_id").unwrap().insert(id.into());
                     }
                 }
+                let array_kind = match key.as_str() {
+                    "reservations" => Some("reservation_id"),
+                    "line_ids" => Some("line_id"),
+                    "bill_ids" => Some("bill_id"),
+                    _ => None,
+                };
+                if let Some(kind) = array_kind
+                    && let Some(set) = ids.get_mut(kind)
+                    && let Some(values) = value.as_array()
+                {
+                    set.extend(
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .map(str::to_owned),
+                    );
+                }
                 observe(value, ids);
             }
         }
@@ -231,11 +271,24 @@ fn observe(value: &Value, ids: &mut BTreeMap<String, BTreeSet<String>>) {
     }
 }
 
-fn seen_ids(request: &Value) -> BTreeMap<String, BTreeSet<String>> {
+fn seen_ids(request: &Value, domain_ids: bool) -> BTreeMap<String, BTreeSet<String>> {
     let mut ids: BTreeMap<String, BTreeSet<String>> = ["user_id", "order_id", "product_id"]
         .into_iter()
         .map(|key| (key.into(), BTreeSet::new()))
         .collect();
+    if domain_ids {
+        for key in [
+            "reservation_id",
+            "customer_id",
+            "line_id",
+            "device_id",
+            "bill_id",
+            "plan_id",
+            "telecom_id",
+        ] {
+            ids.insert(key.into(), BTreeSet::new());
+        }
+    }
     let mut calls = BTreeMap::<String, String>::new();
     for message in request["messages"].as_array().into_iter().flatten() {
         if message["role"] == "assistant" {
@@ -280,6 +333,9 @@ fn seen_ids(request: &Value) -> BTreeMap<String, BTreeSet<String>> {
                 _ => {}
             }
         } else if let Ok(value) = serde_json::from_str::<Value>(content) {
+            if value.get("error").is_some() {
+                continue;
+            }
             observe(&value, &mut ids);
             if name == Some("list_all_product_types")
                 && let Some(products) = value.as_object()
@@ -294,6 +350,14 @@ fn seen_ids(request: &Value) -> BTreeMap<String, BTreeSet<String>> {
             }
         }
     }
+    if domain_ids {
+        let telecom_ids: BTreeSet<String> =
+            ["customer_id", "line_id", "device_id", "bill_id", "plan_id"]
+                .into_iter()
+                .flat_map(|kind| ids[kind].iter().cloned())
+                .collect();
+        ids.insert("telecom_id".into(), telecom_ids);
+    }
     ids
 }
 
@@ -301,6 +365,7 @@ fn tool_calls(
     tool: &Value,
     known: &BTreeMap<String, BTreeSet<String>>,
     adapt: bool,
+    domain_ids: bool,
 ) -> Result<(Vec<Value>, &'static str), String> {
     let schema = object(&tool["parameters"], "Parameter schema")?;
     keys(
@@ -345,25 +410,39 @@ fn tool_calls(
         let values = match finite_values(spec) {
             Ok(values) => values,
             Err(error) => {
-                if !adapt
-                    || lookup_argument(tool["name"].as_str().unwrap_or_default())
-                        != Some(name.as_str())
-                    || properties.len() != 1
-                {
+                let tool_name = tool["name"].as_str().unwrap_or_default();
+                let retail_kind = (adapt
+                    && properties.len() == 1
+                    && lookup_argument(tool_name) == Some(name.as_str()))
+                .then_some(name.as_str());
+                let domain_kind = domain_ids
+                    .then(|| domain_identifier(tool_name, name))
+                    .flatten();
+                let Some(kind) = retail_kind.or(domain_kind) else {
                     return Err(format!("{name}: {error}"));
-                }
+                };
                 let spec = object(spec, "Identifier schema")?;
-                keys(spec, &["type", "description", "title"])?;
+                keys(spec, &["type", "description", "title", "default"])?;
                 if spec.get("type").and_then(Value::as_str) != Some("string") {
                     return Err(
                         "Observed-ID adaptation requires an unconstrained string identifier".into(),
                     );
                 }
-                let values: Vec<Value> = known[name].iter().cloned().map(Value::String).collect();
+                let values: Vec<Value> = known
+                    .get(kind)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .map(Value::String)
+                    .collect();
                 if values.is_empty() {
                     return Err("No identifier observed in earlier tool results".into());
                 }
-                origin = "observed_id_choices";
+                origin = if domain_kind.is_some() {
+                    "observed_domain_id_choices"
+                } else {
+                    "observed_id_choices"
+                };
                 values
             }
         };
@@ -401,6 +480,16 @@ fn tool_calls(
 /// The retail adapter is deliberately opt-in. It only reuses identifiers in prior
 /// tool results and cannot read the store, task description, or future answers.
 pub fn build_options(request: &Value, observed_retail_ids: bool) -> ChoiceSet {
+    build_options_with_domain_ids(request, observed_retail_ids, false)
+}
+
+/// Extend only named airline and telecom tools with IDs from previous tool results.
+/// User text, hidden databases, and future results never supply these choices.
+pub fn build_options_with_domain_ids(
+    request: &Value,
+    observed_retail_ids: bool,
+    observed_domain_ids: bool,
+) -> ChoiceSet {
     let mut result = ChoiceSet::default();
     if request.get("n").is_some_and(|n| n.as_u64() != Some(1)) {
         result.note(
@@ -464,8 +553,8 @@ pub fn build_options(request: &Value, observed_retail_ids: bool) -> ChoiceSet {
             return result;
         }
     };
-    let known = if observed_retail_ids {
-        seen_ids(request)
+    let known = if observed_retail_ids || observed_domain_ids {
+        seen_ids(request, observed_domain_ids)
     } else {
         BTreeMap::new()
     };
@@ -497,7 +586,7 @@ pub fn build_options(request: &Value, observed_retail_ids: bool) -> ChoiceSet {
             result.note(name, "excluded", "The request requires a different tool");
             continue;
         }
-        match tool_calls(function, &known, observed_retail_ids) {
+        match tool_calls(function, &known, observed_retail_ids, observed_domain_ids) {
             Ok((calls, origin)) if result.options.len() + calls.len() <= MAX_OPTIONS => {
                 result.note(name, origin, format!("{} complete calls", calls.len()));
                 for arguments in calls {
@@ -550,6 +639,100 @@ mod tests {
 
     fn request(tools: Vec<Value>) -> Value {
         json!({"messages":[], "tools":tools})
+    }
+
+    #[test]
+    fn boolean_defaults_remain_annotations_and_optional_omission_is_preserved() {
+        let req = request(vec![tool(
+            "ls",
+            json!({"type":"object", "properties":{
+            "a":{"type":"boolean","default":false}}}),
+        )]);
+        let result = build_options(&req, false);
+        assert_eq!(result.options.len(), 3);
+        for expected in [json!({}), json!({"a":false}), json!({"a":true})] {
+            assert!(
+                result
+                    .options
+                    .values()
+                    .any(|call| call.arguments == expected)
+            );
+        }
+    }
+
+    #[test]
+    fn domain_adapters_use_observed_ids_and_require_every_argument() {
+        let mut req = request(vec![
+            tool(
+                "enable_roaming",
+                json!({"type":"object", "properties":{
+                "customer_id":{"type":"string"},"line_id":{"type":"string"}},
+                "required":["customer_id","line_id"]}),
+            ),
+            unary("get_details_by_id", "id", json!({"type":"string"})),
+            unary(
+                "cancel_reservation",
+                "reservation_id",
+                json!({"type":"string"}),
+            ),
+            tool(
+                "suspend_line",
+                json!({"type":"object", "properties":{
+                "customer_id":{"type":"string"},"line_id":{"type":"string"},"reason":{"type":"string"}},
+                "required":["customer_id","line_id","reason"]}),
+            ),
+        ]);
+        req["messages"] = json!([
+            {"role":"user","content":"{\"customer_id\":\"C_hidden\",\"line_id\":\"L_hidden\"}"},
+            {"role":"tool","content":"{\"customer_id\":\"C1\",\"line_ids\":[\"L1\"],\"bill_ids\":[\"B1\"],\"reservations\":[\"R1\"]}"}
+        ]);
+        assert!(build_options(&req, true).options.is_empty());
+        let result = build_options_with_domain_ids(&req, false, true);
+        assert_eq!(result.options.len(), 5);
+        assert!(result.options.values().any(|c| c.name == "enable_roaming"
+            && c.arguments == json!({"customer_id":"C1","line_id":"L1"})));
+        assert!(
+            result
+                .options
+                .values()
+                .all(|c| !c.arguments.to_string().contains("hidden") && c.name != "suspend_line")
+        );
+        assert!(
+            result
+                .options
+                .values()
+                .all(|c| c.origin == "observed_domain_id_choices")
+        );
+        req["messages"] = json!([{"role":"tool","content":"{\"customer_id\":\"C1\"}"}]);
+        assert!(
+            build_options_with_domain_ids(&req, false, true)
+                .options
+                .values()
+                .all(|c| c.name != "enable_roaming")
+        );
+    }
+
+    #[test]
+    fn domain_adaptation_does_not_bypass_constraints_or_error_outputs() {
+        let mut req = request(vec![unary(
+            "get_details_by_id",
+            "id",
+            json!({"type":"string","pattern":"^L"}),
+        )]);
+        req["messages"] = json!([{"role":"tool","content":"{\"line_id\":\"L1\"}"}]);
+        assert!(
+            build_options_with_domain_ids(&req, false, true)
+                .options
+                .is_empty()
+        );
+        req["tools"][0]["function"]["parameters"]["properties"]["id"] = json!({"type":"string"});
+        req["messages"] =
+            json!([{"role":"tool","content":"{\"error\":\"not found\",\"line_id\":\"L1\"}"}]);
+        assert!(
+            build_options_with_domain_ids(&req, false, true)
+                .options
+                .is_empty()
+        );
     }
 
     #[test]

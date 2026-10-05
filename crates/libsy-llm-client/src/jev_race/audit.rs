@@ -71,6 +71,7 @@ impl Audit {
             state: Mutex::new(State {
                 events,
                 summary: json!({"request_id": id, "enabled": config.enabled,
+                    "observe_only": config.observe_only,
                     "started_unix_seconds": nanos as f64 / 1_000_000_000.0,
                     "threshold": config.threshold, "max_hold_ms": config.deadline.as_secs_f64() * 1000.0,
                     "model_requested": request.llm_request.model,
@@ -155,6 +156,7 @@ impl Audit {
             "jev_started" => state.summary["jev_started_ms"] = json!(millis),
             "jev_http_response" => state.summary["jev_response_ms"] = json!(millis),
             "jev_decision" => {
+                state.summary["jev_decision_ms"] = json!(millis);
                 state.summary["jev_answer"] = value["answer"].clone();
                 state.summary["jev_usage"] = value["usage"].clone();
             }

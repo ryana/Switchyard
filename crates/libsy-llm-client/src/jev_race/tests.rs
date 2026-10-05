@@ -80,6 +80,33 @@ fn decision(selected: &str, probability: f64) -> Value {
         "usage":{"input_tokens":123,"output_tokens":9}})
 }
 
+#[test]
+fn generated_call_id_is_a_valid_python_identifier() {
+    let response = jev_response(
+        &request(false),
+        &CompleteCall {
+            name: "choose".into(),
+            arguments: json!({"ok": true}),
+            description: "Choose".into(),
+            origin: "native".into(),
+        },
+        &decision("call_001", 0.99),
+        "1791106242027159000-5",
+    );
+    let LlmResponse::Agg(aggregate) = response.llm_response else {
+        panic!("aggregate expected")
+    };
+    let ContentBlock::ToolCall(call) = &aggregate.outputs[0].content[0] else {
+        panic!("tool call expected")
+    };
+    assert!(call.id.starts_with("call_"));
+    assert!(
+        call.id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    );
+}
+
 async fn server(delay: u64, response: Value) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -141,6 +168,64 @@ fn text_event(value: &str) -> LlmResponseStreamEvent {
             text: value.into(),
         }],
     )
+}
+
+#[tokio::test]
+async fn diagnostic_finishes_both_requests_in_either_arrival_order() {
+    for (jev_delay, normal_delay) in [(5, 65), (65, 5)] {
+        let server = server(jev_delay, decision("call_001", 0.99)).await;
+        let audit = directory();
+        let mut client = client(
+            &server,
+            FakeNormal {
+                delay: Duration::from_millis(normal_delay),
+                chunks: None,
+                dropped: Arc::new(AtomicBool::new(false)),
+            },
+            20,
+            audit.clone(),
+        );
+        client.config.observe_only = true;
+        let response = client.call(request(false)).await.unwrap();
+        assert_eq!(response.upstream_headers["x-request-id"], "normal-request");
+        let result = response.llm_response.into_agg().await.unwrap();
+        assert_eq!(
+            result.outputs[0].content,
+            text_response(None, "normal answer").outputs[0].content
+        );
+        let summary = read_summary(&audit);
+        assert_eq!(summary["winner"], "llm");
+        assert_eq!(summary["reason"], "observe_only");
+        assert_eq!(summary["observe_only"], true);
+        assert_eq!(summary["jev_answer"]["choice"], "call_001");
+        assert_eq!(summary["normal_usage"]["output_tokens"], 2);
+        assert_eq!(summary["jev_usage"]["output_tokens"], 9);
+        assert_eq!(summary["normal_cancel_requested"], false);
+        assert_eq!(summary["jev_cancel_requested"], false);
+        let jev_ms = summary["jev_decision_ms"].as_f64().unwrap();
+        let normal_ms = summary["normal_complete_ms"].as_f64().unwrap();
+        assert_eq!(jev_ms < normal_ms, jev_delay < normal_delay);
+    }
+}
+
+#[tokio::test]
+async fn diagnostic_rejects_streaming_before_starting_upstream_work() {
+    let server = server(0, decision("call_001", 0.99)).await;
+    let dropped = Arc::new(AtomicBool::new(false));
+    let mut client = client(
+        &server,
+        FakeNormal {
+            delay: Duration::ZERO,
+            chunks: None,
+            dropped: dropped.clone(),
+        },
+        400,
+        directory(),
+    );
+    client.config.observe_only = true;
+    assert!(client.call(request(true)).await.is_err());
+    assert!(!dropped.load(Ordering::SeqCst));
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
