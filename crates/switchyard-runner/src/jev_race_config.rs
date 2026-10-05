@@ -17,6 +17,10 @@ use crate::RunnerError;
 pub(crate) struct JevRaceRouteConfig {
     enabled: bool,
     observe_only: bool,
+    evaluation_wait_both: bool,
+    assumed_jev_latency_ms: u64,
+    service_timeout_ms: u64,
+    disable_hold: bool,
     endpoint: String,
     api_key_env: String,
     model: String,
@@ -32,6 +36,10 @@ impl Default for JevRaceRouteConfig {
         Self {
             enabled: true,
             observe_only: false,
+            evaluation_wait_both: false,
+            assumed_jev_latency_ms: 200,
+            service_timeout_ms: 30_000,
+            disable_hold: false,
             endpoint: "https://api.typesafe.ai/v1/systemone".to_string(),
             api_key_env: "JEV_KEY".to_string(),
             model: "jev-1.13.0".to_string(),
@@ -81,12 +89,15 @@ impl JevRaceRouteConfig {
             endpoint: self.endpoint.clone(),
             model: self.model.clone(),
             threshold: self.threshold,
-            deadline: Duration::from_millis(self.max_hold_ms),
+            deadline: (!self.disable_hold).then(|| Duration::from_millis(self.max_hold_ms)),
             observed_retail_ids: self.observed_retail_ids,
             observed_domain_ids: self.observed_domain_ids,
             audit_directory: self.audit_directory.clone(),
             enabled: self.enabled,
             observe_only: self.observe_only,
+            evaluation_wait_both: self.evaluation_wait_both,
+            assumed_jev_latency: Duration::from_millis(self.assumed_jev_latency_ms),
+            service_timeout: Duration::from_millis(self.service_timeout_ms),
         };
         let client = JevRaceClient::new(upstream, config, api_key.to_string())?
             .with_redaction_keys(redaction_keys.to_vec());
@@ -107,6 +118,18 @@ mod tests {
         assert_eq!(config.threshold, 0.9);
         assert!(!config.observed_retail_ids);
         assert!(config.audit_directory.is_none());
+    }
+
+    #[test]
+    fn parses_wait_both_with_separate_operational_timeout() {
+        let config: JevRaceRouteConfig = toml::from_str(
+            "evaluation_wait_both = true\ndisable_hold = true\nservice_timeout_ms = 60000",
+        )
+        .unwrap();
+        assert!(config.evaluation_wait_both);
+        assert!(config.disable_hold);
+        assert_eq!(config.assumed_jev_latency_ms, 200);
+        assert_eq!(config.service_timeout_ms, 60_000);
     }
 
     #[test]

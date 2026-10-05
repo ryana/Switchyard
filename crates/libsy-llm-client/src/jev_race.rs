@@ -35,6 +35,12 @@ pub struct JevRaceConfig {
     pub enabled: bool,
     /// Finish both non-streaming requests for diagnostics, always returning the LLM.
     pub observe_only: bool,
+    /// Finish both requests, selecting using an assumed total JEV latency.
+    pub evaluation_wait_both: bool,
+    /// Assumed complete JEV path from the common request origin.
+    pub assumed_jev_latency: Duration,
+    /// Operational JEV HTTP timeout, independent of race selection.
+    pub service_timeout: Duration,
     /// Full System One endpoint URL.
     pub endpoint: String,
     /// JEV model sent in the request.
@@ -42,7 +48,7 @@ pub struct JevRaceConfig {
     /// Minimum probability of the selected complete call.
     pub threshold: f64,
     /// Maximum time to hold normal output while waiting for JEV.
-    pub deadline: Duration,
+    pub deadline: Option<Duration>,
     /// Permit the explicitly documented retail IDs observed in earlier tool output.
     pub observed_retail_ids: bool,
     /// Permit named airline and telecom IDs observed in earlier tool output.
@@ -56,10 +62,13 @@ impl Default for JevRaceConfig {
         Self {
             enabled: true,
             observe_only: false,
+            evaluation_wait_both: false,
+            assumed_jev_latency: Duration::from_millis(200),
+            service_timeout: Duration::from_secs(30),
             endpoint: "https://api.typesafe.ai/v1/systemone".into(),
             model: "jev-1.13.0".into(),
             threshold: 0.9,
-            deadline: Duration::from_millis(400),
+            deadline: Some(Duration::from_millis(400)),
             observed_retail_ids: false,
             observed_domain_ids: false,
             audit_directory: None,
@@ -89,10 +98,12 @@ impl JevRaceClient {
     ) -> Result<Self, LlmClientError> {
         if !config.threshold.is_finite()
             || !(0.0..=1.0).contains(&config.threshold)
-            || config.deadline.is_zero()
+            || config.deadline.is_some_and(|value| value.is_zero())
+            || config.service_timeout.is_zero()
+            || (config.observe_only && config.evaluation_wait_both)
         {
             return Err(LlmClientError::Configuration {
-                message: "JEV threshold must be 0..=1 and deadline must be positive".into(),
+                message: "JEV threshold must be 0..=1, timeouts positive, and diagnostic modes mutually exclusive".into(),
             });
         }
         let authorization = if config.enabled {
@@ -165,6 +176,26 @@ impl JevRaceClient {
             .map_err(|e| e.to_string())?;
         let response = request.send().await.map_err(|error| error.to_string())?;
         let status = response.status();
+        let mut headers = serde_json::Map::new();
+        // Only named timing/correlation headers are recorded. Never copy credentials.
+        for name in [
+            "date",
+            "server-timing",
+            "x-request-id",
+            "x-correlation-id",
+            "traceparent",
+        ] {
+            if let Some(value) = response.headers().get(name).and_then(|v| v.to_str().ok()) {
+                headers.insert(name.into(), json!(value));
+            }
+        }
+        audit
+            .event(
+                "jev_headers",
+                json!({"status": status.as_u16(),
+            "http_version": format!("{:?}", response.version()), "headers": headers}),
+            )
+            .map_err(|e| e.to_string())?;
         let body = response.text().await.map_err(|error| error.to_string())?;
         audit
             .event(
@@ -175,7 +206,8 @@ impl JevRaceClient {
         if !status.is_success() {
             return Err(format!("JEV HTTP {status}: {body}"));
         }
-        let value: Value = serde_json::from_str(&body).map_err(|error| error.to_string())?;
+        let value: Value =
+            serde_json::from_str(&body).map_err(|error| format!("Invalid JEV JSON: {error}"))?;
         audit
             .write_json("jev-response.json", &value)
             .map_err(|e| e.to_string())?;
@@ -186,9 +218,11 @@ impl JevRaceClient {
 #[async_trait]
 impl RoutedLlmClient for JevRaceClient {
     async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
-        if self.config.observe_only && request.llm_request.stream {
+        if (self.config.observe_only || self.config.evaluation_wait_both)
+            && request.llm_request.stream
+        {
             return Err(LlmClientError::Configuration {
-                message: "JEV observe_only requires a non-streaming diagnostic request".into(),
+                message: "JEV diagnostic modes require a non-streaming request".into(),
             });
         }
         let audit = Audit::new(&self.config, &request, self.redaction_keys.clone())?;
@@ -259,47 +293,107 @@ impl RoutedLlmClient for JevRaceClient {
         let payload = json!({"model": self.config.model, "state": wire,
             "questions": {"next_call": {"type": "choice", "instructions": INSTRUCTIONS, "criteria": criteria}}});
         audit.write_json("jev-request.json", &payload)?;
-        let mut request_builder = self
+        let request_builder = self
             .http
             .post(&self.config.endpoint)
             .header(
                 http::header::AUTHORIZATION,
                 self.authorization.clone().expect("enabled JEV has auth"),
             )
-            .json(&payload);
-        if self.config.observe_only {
-            // Diagnostic requests deliberately outlive the race deadline so late
-            // predictions remain observable. They must still have a finite timeout.
-            request_builder = request_builder.timeout(Duration::from_secs(30));
-        }
+            .json(&payload)
+            .timeout(self.config.service_timeout);
         let mut prediction =
             Prediction(tokio::spawn(Self::predict(request_builder, audit.clone())));
-        if self.config.observe_only {
+        if self.config.observe_only || self.config.evaluation_wait_both {
             let observe_prediction = async {
-                match prediction.result().await.and_then(|body| {
-                    select_choice(&body, &choices, self.config.threshold)
-                        .map(|choice| (body, choice.is_some()))
-                }) {
-                    Ok((body, accepted)) => audit.event(
-                        "jev_decision",
-                        json!({
-                        "accepted": accepted, "observe_only": true,
-                        "answer": body["answers"]["next_call"], "usage": body.get("usage")
-                        }),
-                    ),
-                    Err(error) => audit.event("jev_error", json!({"error": error})),
+                let prediction_result = prediction.result().await;
+                let (body, choice, outcome) = match prediction_result {
+                    Ok(body) => match select_choice(&body, &choices, self.config.threshold) {
+                        Ok(choice) => {
+                            let outcome = if choice.is_some() {
+                                "qualified"
+                            } else if body["answers"]["next_call"]["choice"] == "NONE" {
+                                "none"
+                            } else {
+                                "below_cutoff"
+                            };
+                            audit.event(
+                                "jev_decision",
+                                json!({"accepted": choice.is_some(),
+                            "outcome": outcome, "answer": body["answers"]["next_call"],
+                            "usage": body.get("usage"), "model": body.get("model")}),
+                            )?;
+                            (Some(body), choice, outcome)
+                        }
+                        Err(error) => {
+                            audit.event(
+                                "jev_error",
+                                json!({"error": error, "outcome": "invalid_response"}),
+                            )?;
+                            (Some(body), None, "invalid_response")
+                        }
+                    },
+                    Err(error) => {
+                        let outcome = if error.starts_with("Invalid JEV JSON:") {
+                            "invalid_response"
+                        } else {
+                            "service_error"
+                        };
+                        audit.event("jev_error", json!({"error": error, "outcome": outcome}))?;
+                        (None, None, outcome)
+                    }
+                };
+                Ok::<_, LlmClientError>((body, choice, outcome))
+            };
+            let (normal_result, decision_result) = tokio::join!(normal.next(), observe_prediction);
+            let (body, choice, outcome) = decision_result?;
+            let normal_failed = normal_result.is_err();
+            let modeled_winner = normal_failed
+                || audit.normal_complete_ms().is_some_and(|millis| {
+                    self.config.assumed_jev_latency.as_secs_f64() * 1000.0 < millis
+                });
+            if self.config.evaluation_wait_both
+                && modeled_winner
+                && let Some(option) = choice
+            {
+                audit.select(
+                    "jev",
+                    if normal_failed {
+                        "evaluation_normal_error_qualified_jev"
+                    } else {
+                        "evaluation_assumed_jev_faster"
+                    },
+                )?;
+                let mut response = jev_response(
+                    &request,
+                    option,
+                    body.as_ref().expect("valid JEV body"),
+                    &audit.id,
+                );
+                response
+                    .upstream_headers
+                    .remove("x-switchyard-canceled-llm-usage");
+                return returned_jev(response, guard);
+            }
+            let reason = if self.config.observe_only {
+                "observe_only"
+            } else if normal_failed {
+                "evaluation_normal_error"
+            } else {
+                match outcome {
+                    "qualified" => "evaluation_normal_faster_or_equal",
+                    "none" => "evaluation_jev_none",
+                    "below_cutoff" => "evaluation_jev_below_cutoff",
+                    "invalid_response" => "evaluation_jev_invalid_response",
+                    _ => "evaluation_jev_service_error",
                 }
             };
-            let (normal_result, prediction_recorded) =
-                tokio::join!(normal.next(), observe_prediction);
-            prediction_recorded?;
-            audit.select("llm", "observe_only")?;
+            audit.select("llm", reason)?;
             return match normal_result {
                 Ok(Progress::Complete(response)) => {
                     returned_normal(*response, Vec::new(), guard, false)
                 }
                 Err(error) => {
-                    audit.event("normal_error", json!({"error": error.to_string()}))?;
                     guard.finish("normal_error")?;
                     Err(error)
                 }
@@ -311,13 +405,19 @@ impl RoutedLlmClient for JevRaceClient {
                 }
             };
         }
-        let timeout = sleep_until(audit.started + self.config.deadline);
+        let deadline = self.config.deadline.map(|hold| audit.started + hold);
+        let timeout = async {
+            match deadline {
+                Some(deadline) => sleep_until(deadline).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::pin!(timeout);
         let mut buffered = Vec::new();
         loop {
             // Explicit check prevents a continuously ready normal stream from
             // holding output beyond the configured deadline.
-            if Instant::now() >= audit.started + self.config.deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 audit.event("jev_cancel_requested", json!({"backend_stopped": null}))?;
                 audit.select("llm", "deadline")?;
                 break;
@@ -379,7 +479,7 @@ impl RoutedLlmClient for JevRaceClient {
                 result = prediction.result() => Some(result),
             };
             if let Some(result) = ready_prediction {
-                if Instant::now() >= audit.started + self.config.deadline {
+                if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     audit.select("llm", "deadline")?;
                     break;
                 }
@@ -562,7 +662,13 @@ impl Normal {
         let task_audit = audit.clone();
         let pending = tokio::spawn(async move {
             task_audit.event("normal_started", json!({}))?;
-            let response = client.call(request).await?;
+            let response = match client.call(request).await {
+                Ok(response) => response,
+                Err(error) => {
+                    task_audit.event("normal_error", json!({"error": error.to_string()}))?;
+                    return Err(error);
+                }
+            };
             if let LlmResponse::Agg(aggregate) = &response.llm_response {
                 task_audit.normal_aggregate(aggregate)?;
             }

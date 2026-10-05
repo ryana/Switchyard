@@ -150,7 +150,7 @@ fn client(server: &MockServer, normal: FakeNormal, deadline: u64, audit: PathBuf
         Arc::new(normal),
         JevRaceConfig {
             endpoint: format!("{}/v1/systemone", server.uri()),
-            deadline: Duration::from_millis(deadline),
+            deadline: Some(Duration::from_millis(deadline)),
             audit_directory: Some(audit),
             ..JevRaceConfig::default()
         },
@@ -629,4 +629,245 @@ async fn disabled_recording_needs_no_key_and_redacts_capture_values() {
         assert!(!body.contains("other-secret"));
     }
     assert_eq!(read_summary(&audit)["reason"], "disabled");
+}
+
+#[tokio::test]
+async fn evaluation_retains_both_and_selects_by_assumed_latency_in_both_arrival_orders() {
+    for (jev_delay, normal_delay, assumed, winner) in [
+        (5, 450, 200, "jev"),
+        (450, 5, 1, "jev"),
+        (70, 5, 200, "llm"),
+    ] {
+        let server = server(jev_delay, decision("call_001", 0.99)).await;
+        let audit = directory();
+        let mut client = client(
+            &server,
+            FakeNormal {
+                delay: Duration::from_millis(normal_delay),
+                chunks: None,
+                dropped: Arc::new(AtomicBool::new(false)),
+            },
+            1,
+            audit.clone(),
+        );
+        client.config.evaluation_wait_both = true;
+        client.config.deadline = None;
+        client.config.assumed_jev_latency = Duration::from_millis(assumed);
+        client.call(request(false)).await.unwrap();
+        let summary = read_summary(&audit);
+        assert_eq!(summary["winner"], winner);
+        assert!(summary["normal_complete_ms"].is_number());
+        assert!(summary["jev_response_ms"].is_number());
+        assert_eq!(summary["normal_usage"]["output_tokens"], 2);
+        assert_eq!(summary["jev_usage"]["output_tokens"], 9);
+        assert_eq!(summary["normal_cancel_requested"], false);
+        assert_eq!(summary["jev_cancel_requested"], false);
+        assert!(summary["max_hold_ms"].is_null());
+        let capture = std::fs::read_dir(&audit)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        for name in [
+            "normal-aggregate.json",
+            "jev-response.json",
+            "returned-aggregate.json",
+        ] {
+            assert!(capture.join(name).exists(), "missing {name}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn evaluation_distinguishes_none_low_score_invalid_and_service_error() {
+    for (body, outcome) in [
+        (decision("NONE", 1.0), "none"),
+        (decision("call_001", 0.7), "below_cutoff"),
+        (json!({}), "invalid_response"),
+    ] {
+        let server = server(5, body).await;
+        let audit = directory();
+        let mut client = client(
+            &server,
+            FakeNormal {
+                delay: Duration::from_millis(30),
+                chunks: None,
+                dropped: Arc::new(AtomicBool::new(false)),
+            },
+            1,
+            audit.clone(),
+        );
+        client.config.evaluation_wait_both = true;
+        client.config.assumed_jev_latency = Duration::ZERO;
+        client.call(request(false)).await.unwrap();
+        let summary = read_summary(&audit);
+        assert_eq!(summary["winner"], "llm");
+        assert_eq!(summary["jev_outcome"], outcome);
+    }
+    let server = server(100, decision("call_001", 0.99)).await;
+    let audit = directory();
+    let mut client = client(
+        &server,
+        FakeNormal {
+            delay: Duration::ZERO,
+            chunks: None,
+            dropped: Arc::new(AtomicBool::new(false)),
+        },
+        1,
+        audit.clone(),
+    );
+    client.config.evaluation_wait_both = true;
+    client.config.service_timeout = Duration::from_millis(10);
+    client.call(request(false)).await.unwrap();
+    let summary = read_summary(&audit);
+    assert_eq!(summary["jev_outcome"], "service_error");
+    assert_eq!(summary["jev_cancel_requested"], false);
+}
+
+struct FailedNormal;
+#[async_trait]
+impl RoutedLlmClient for FailedNormal {
+    async fn call(&self, _: Request) -> Result<Response, LlmClientError> {
+        Err(LlmClientError::General("normal failed".into()))
+    }
+}
+
+#[tokio::test]
+async fn evaluation_recovers_normal_failure_only_with_qualified_jev() {
+    for (body, recovered) in [
+        (decision("call_001", 0.99), true),
+        (decision("NONE", 1.0), false),
+        (json!({}), false),
+    ] {
+        let server = server(20, body).await;
+        let audit = directory();
+        let client = JevRaceClient::new(
+            Arc::new(FailedNormal),
+            JevRaceConfig {
+                endpoint: format!("{}/v1/systemone", server.uri()),
+                evaluation_wait_both: true,
+                audit_directory: Some(audit.clone()),
+                ..JevRaceConfig::default()
+            },
+            "secret".into(),
+        )
+        .unwrap();
+        assert_eq!(client.call(request(false)).await.is_ok(), recovered);
+        let summary = read_summary(&audit);
+        assert!(summary["normal_error"].is_string());
+        assert_eq!(
+            summary["reason"],
+            if recovered {
+                "evaluation_normal_error_qualified_jev"
+            } else {
+                "evaluation_normal_error"
+            }
+        );
+        assert_eq!(summary["jev_cancel_requested"], false);
+    }
+}
+
+#[tokio::test]
+async fn disabled_hold_keeps_live_race_selection_and_allows_late_jev() {
+    let server = server(450, decision("call_001", 0.99)).await;
+    let audit = directory();
+    let mut client = client(
+        &server,
+        FakeNormal {
+            delay: Duration::from_millis(900),
+            chunks: None,
+            dropped: Arc::new(AtomicBool::new(false)),
+        },
+        400,
+        audit.clone(),
+    );
+    client.config.deadline = None;
+    client.call(request(false)).await.unwrap();
+    assert_eq!(read_summary(&audit)["winner"], "jev");
+}
+
+#[tokio::test]
+async fn evaluation_rejects_streaming_before_any_requests() {
+    let server = server(0, decision("call_001", 0.99)).await;
+    let dropped = Arc::new(AtomicBool::new(false));
+    let mut client = client(
+        &server,
+        FakeNormal {
+            delay: Duration::ZERO,
+            chunks: None,
+            dropped: dropped.clone(),
+        },
+        400,
+        directory(),
+    );
+    client.config.evaluation_wait_both = true;
+    assert!(client.call(request(true)).await.is_err());
+    assert!(!dropped.load(Ordering::SeqCst));
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn evaluation_records_safe_headers_and_invalid_json() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("server-timing", "inference;dur=12")
+                .insert_header("x-request-id", "secret")
+                .insert_header("set-cookie", "credential-cookie")
+                .insert_header("x-api-key", "credential-key")
+                .set_body_string("not JSON"),
+        )
+        .mount(&server)
+        .await;
+    let audit = directory();
+    let client = JevRaceClient::new(
+        Arc::new(FakeNormal {
+            delay: Duration::from_millis(10),
+            chunks: None,
+            dropped: Arc::new(AtomicBool::new(false)),
+        }),
+        JevRaceConfig {
+            endpoint: server.uri(),
+            evaluation_wait_both: true,
+            audit_directory: Some(audit.clone()),
+            ..JevRaceConfig::default()
+        },
+        "secret".into(),
+    )
+    .unwrap();
+    client.call(request(false)).await.unwrap();
+    let summary = read_summary(&audit);
+    assert_eq!(summary["jev_outcome"], "invalid_response");
+    assert!(
+        summary["jev_headers_ms"].as_f64().unwrap() <= summary["jev_response_ms"].as_f64().unwrap()
+    );
+    assert_eq!(
+        summary["jev_response_headers"]["server-timing"],
+        "inference;dur=12"
+    );
+    assert_eq!(
+        summary["jev_response_headers"]["x-request-id"],
+        "[REDACTED]"
+    );
+    assert!(summary["jev_response_headers"].get("set-cookie").is_none());
+    assert!(summary["jev_response_headers"].get("x-api-key").is_none());
+}
+
+#[test]
+fn rejects_conflicting_modes_and_zero_operational_timeout() {
+    for config in [
+        JevRaceConfig {
+            observe_only: true,
+            evaluation_wait_both: true,
+            ..JevRaceConfig::default()
+        },
+        JevRaceConfig {
+            service_timeout: Duration::ZERO,
+            ..JevRaceConfig::default()
+        },
+    ] {
+        assert!(JevRaceClient::new(Arc::new(FailedNormal), config, "secret".into()).is_err());
+    }
 }

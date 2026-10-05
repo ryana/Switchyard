@@ -82,13 +82,13 @@ them as variable names without changing tool semantics.
 
 Set `observe_only = true` in the race table on a separate diagnostic route. Both
 services finish and the route always returns the normal model response unchanged.
-No winning branch cancels the other. JEV has a 30-second diagnostic timeout;
+No winning branch cancels the other. JEV has a separate `service_timeout_ms` operational HTTP timeout (default 30,000 ms);
 streaming diagnostic requests are rejected before starting either service.
 
 Record `normal_complete_ms` and `jev_decision_ms` from each audit summary. The
 diagnostic HTTP duration includes waiting for both and is not either service's
 response time. Use a zero threshold to retain all valid choices, then compare
-scores and the normal race deadline during analysis. `NONE`, malformed answers,
+scores during analysis. `NONE`, malformed answers,
 errors, and predictions arriving after the deadline remain in the captures.
 
 Complete tool-call agreement is separate from correctness. Audit policy and
@@ -118,3 +118,46 @@ A JEV response reports JEV's own input and output usage. It includes
 `x-switchyard-winner: jev`, `x-switchyard-usage-source: jev`, and
 `x-switchyard-canceled-llm-usage: unknown` headers. Those counts do not include
 the canceled LLM request.
+
+
+## Wait for both and select at an assumed latency
+
+For a non-streaming timing experiment, use a separate route with:
+
+```toml
+[routes.race.jev_race]
+evaluation_wait_both = true
+disable_hold = true
+assumed_jev_latency_ms = 200
+service_timeout_ms = 30000
+threshold = 0.90
+```
+
+Use the actual route table name from your configuration. `evaluation_wait_both`
+and `observe_only` are mutually exclusive. Both reject streaming before sending
+requests. Evaluation waits for both complete responses even when the normal
+model finishes first. It selects a valid, score-qualified JEV call only when the
+assumed total JEV latency is strictly less than actual `normal_complete_ms`.
+Ties select the normal model. If the normal model fails, a qualified JEV call may
+recover the request with reason `evaluation_normal_error_qualified_jev`.
+Otherwise the normal error is returned. NONE, a low score, invalid responses,
+and service errors have distinct `jev_outcome` fields. Existing tool eligibility
+and choice limits remain unchanged.
+
+All times share the audit request origin. The assumed latency includes the
+whole JEV path. It is not added to normal fallback time. Actual collection wall
+time is `elapsed_ms`; it includes both requests and is not a speedup measurement.
+Both response payloads and usage remain available. No losing branch is canceled
+in this mode. JEV-selected diagnostic responses omit the canceled-LLM-usage header.
+Recomputing a different latency on saved turns is a model on that recorded
+trajectory; it does not measure the success of an unexecuted conversation.
+
+`disable_hold = true` maps to Rust `deadline: None`. The normal live race still
+returns whichever qualifying branch completes first and cancels the other.
+Its default remains `max_hold_ms = 400`; disabling the hold does not enable
+wait-both behavior. Operational HTTP timeouts are independent of this hold.
+
+Captures add `jev_headers_ms`, body completion `jev_response_ms`, returned
+`jev_model`, and named timing/correlation response headers. Header capture uses
+an allowlist and existing secret redaction. `normal_headers_ms` for aggregate
+clients marks receipt of the complete aggregate, not network header arrival.

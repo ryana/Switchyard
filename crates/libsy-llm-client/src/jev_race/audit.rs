@@ -72,8 +72,11 @@ impl Audit {
                 events,
                 summary: json!({"request_id": id, "enabled": config.enabled,
                     "observe_only": config.observe_only,
+                    "evaluation_wait_both": config.evaluation_wait_both,
+                    "assumed_jev_latency_ms": config.assumed_jev_latency.as_secs_f64() * 1000.0,
+                    "service_timeout_ms": config.service_timeout.as_secs_f64() * 1000.0,
                     "started_unix_seconds": nanos as f64 / 1_000_000_000.0,
-                    "threshold": config.threshold, "max_hold_ms": config.deadline.as_secs_f64() * 1000.0,
+                    "threshold": config.threshold, "max_hold_ms": config.deadline.map(|value| value.as_secs_f64() * 1000.0),
                     "model_requested": request.llm_request.model,
                     "correlation_id": metadata.and_then(|m| m.correlation_id.as_deref()),
                     "session_id": metadata.and_then(|m| m.session_id.as_deref()),
@@ -152,11 +155,24 @@ impl Audit {
         let mut state = self.state.lock();
         match name {
             "normal_cancel_requested" | "jev_cancel_requested" => state.summary[name] = json!(true),
-            "normal_error" | "jev_error" => state.summary[name] = value["error"].clone(),
+            "normal_error" | "jev_error" => {
+                state.summary[name] = value["error"].clone();
+                state.summary[format!("{name}_ms")] = json!(millis);
+                if name == "jev_error" {
+                    state.summary["jev_outcome"] = value["outcome"].clone();
+                }
+            }
+            "jev_headers" => {
+                state.summary["jev_headers_ms"] = json!(millis);
+                state.summary["jev_response_headers"] = value["headers"].clone();
+                state.summary["jev_http_version"] = value["http_version"].clone();
+            }
             "jev_started" => state.summary["jev_started_ms"] = json!(millis),
             "jev_http_response" => state.summary["jev_response_ms"] = json!(millis),
             "jev_decision" => {
                 state.summary["jev_decision_ms"] = json!(millis);
+                state.summary["jev_outcome"] = value["outcome"].clone();
+                state.summary["jev_model"] = value["model"].clone();
                 state.summary["jev_answer"] = value["answer"].clone();
                 state.summary["jev_usage"] = value["usage"].clone();
             }
@@ -254,6 +270,10 @@ impl Audit {
         }
         self.write_json("normal-aggregate.json", &json!(aggregate))?;
         self.event("normal_complete", json!({}))
+    }
+
+    pub fn normal_complete_ms(&self) -> Option<f64> {
+        self.state.lock().summary["normal_complete_ms"].as_f64()
     }
 
     pub fn normal_is_complete(&self) -> bool {
