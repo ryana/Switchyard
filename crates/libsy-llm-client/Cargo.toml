@@ -22,6 +22,7 @@ switchyard-protocol.workspace = true
 switchyard-translation.workspace = true
 reqwest.workspace = true
 async-trait.workspace = true
+async-stream.workspace = true
 futures.workspace = true
 futures-util.workspace = true
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
@@ -29,6 +30,7 @@ parking_lot.workspace = true
 http.workspace = true
 httpdate.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true

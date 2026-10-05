@@ -19,6 +19,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{Category, ModelId, RoutedLlmClient, WireFormat};
 
+use crate::jev_race_config::JevRaceRouteConfig;
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
     Runner, RunnerError,
@@ -70,6 +71,7 @@ struct RouteConfig {
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
     vision: Option<bool>,
+    jev_race: Option<JevRaceRouteConfig>,
     algorithm: AlgorithmSpec,
 }
 
@@ -89,6 +91,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
         let vision = take_optional(&mut table, "vision")?;
+        let jev_race = take_optional(&mut table, "jev_race")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
@@ -97,6 +100,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             tool_calling,
             reasoning,
             vision,
+            jev_race,
             algorithm,
         })
     }
@@ -211,6 +215,21 @@ impl DeploymentConfig {
 
         let mut provider_api_keys = Vec::new();
         let clients = self.build_clients(&mut provider_api_keys)?;
+        let jev_keys = self
+            .routes
+            .iter()
+            .map(|(name, route)| {
+                let key = route
+                    .jev_race
+                    .as_ref()
+                    .map(JevRaceRouteConfig::api_key)
+                    .transpose()?;
+                if let Some(key) = key.as_ref().filter(|key| !key.is_empty()) {
+                    provider_api_keys.push(key.clone());
+                }
+                Ok((name.as_str(), key))
+            })
+            .collect::<RunnerResult<HashMap<_, _>>>()?;
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
@@ -232,8 +251,13 @@ impl DeploymentConfig {
                 .algorithm
                 .build(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-            let (route_clients, caller_auth) =
-                self.build_route_clients(route_name, config, &clients)?;
+            let (route_clients, caller_auth) = self.build_route_clients(
+                route_name,
+                config,
+                &clients,
+                jev_keys[route_name.as_str()].as_deref(),
+                &provider_api_keys,
+            )?;
             let anthropic_auxiliary_target =
                 self.build_anthropic_auxiliary_target(config, &clients);
             let responses_auxiliary_target =
@@ -358,7 +382,22 @@ impl DeploymentConfig {
         route_name: &str,
         route: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        jev_key: Option<&str>,
+        provider_api_keys: &[String],
     ) -> RunnerResult<(ClientRouter, Option<CallerAuthKind>)> {
+        if route.jev_race.is_some()
+            && !matches!(
+                &route.algorithm,
+                AlgorithmSpec::Passthrough {
+                    subagents: None,
+                    ..
+                }
+            )
+        {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} jev_race requires a passthrough route without subagent routing"
+            )));
+        }
         let TargetPromptPolicy {
             prompts,
             routing_answer_target,
@@ -396,6 +435,11 @@ impl DeploymentConfig {
                 forwarding_origins.insert(client_config.base_url.0.origin().ascii_serialization());
             }
             let client: Arc<dyn RoutedLlmClient> = client.clone();
+            let client = if let Some(race) = &route.jev_race {
+                race.wrap(client, jev_key.unwrap_or_default(), provider_api_keys)?
+            } else {
+                client
+            };
             by_model.insert(target.id.clone(), client);
         }
         // Only forwarding clients count: an api_key_env client sends the server's own key.
@@ -791,6 +835,17 @@ bogus = true
     }
 
     #[test]
+    fn explicit_jev_table_is_separate_from_the_routing_algorithm() {
+        let route: RouteConfig = toml::from_str(
+            "id = 'race'\ntype = 'passthrough'\ntarget = 'fast'\n\
+             [jev_race]\nthreshold = 0.95\nmax_hold_ms = 400",
+        )
+        .expect("explicit JEV route");
+        assert!(route.jev_race.is_some());
+        assert_eq!(route.algorithm.routing_target_names(), ["fast"]);
+    }
+
+    #[test]
     fn deployment_errors_keep_one_path_context() {
         let path = Path::new("/definitely/missing/switchyard-routes.toml");
         let error = match load_runner(path) {
@@ -930,6 +985,22 @@ target = "strong"
             Ok(_) => "configuration unexpectedly succeeded".to_string(),
             Err(error) => error.to_string(),
         }
+    }
+
+    #[test]
+    fn disabled_jev_capture_builds_without_a_key() -> RunnerResult<()> {
+        let source = format!(
+            "{VALID_CONFIG}\n[routes.passthrough.jev_race]\nenabled = false\napi_key_env = 'SWITCHYARD_JEV_UNSET_KEY'\n"
+        );
+        let runner = runner_from_toml(&source)?;
+        assert!(runner.route("switchyard/passthrough").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn jev_race_rejects_routes_that_also_make_judge_calls() {
+        let source = format!("{VALID_CONFIG}\n[routes.random.jev_race]\nenabled = false\n");
+        assert!(error_message(&source).contains("jev_race requires a passthrough route"));
     }
 
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
